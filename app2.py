@@ -8,6 +8,20 @@ TEMPLATES_FILE = "workout_templates.json"
 EXERCISE_LIBRARY_FILE = "exercise_library.json"
 WORKOUT_PLAN_FILE = "workout_plan.json"
 
+DEFAULT_WORKOUT_PLAN = {
+    "plan_name": "Current Program",
+    "schedule_mode": "weekly",
+    "weekly_schedule": {
+        "Monday": "",
+        "Tuesday": "",
+        "Wednesday": "",
+        "Thursday": "",
+        "Friday": "",
+        "Saturday": "",
+        "Sunday": "",
+    },
+}
+
 
 def load_workouts():
     """Read all logged workouts from workouts.json."""
@@ -18,6 +32,9 @@ def load_workouts():
                 return []
             return json.loads(content)
     except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        st.error(f"Could not read {WORKOUTS_FILE}. The file contains invalid JSON. Using an empty workout log.")
         return []
 
 
@@ -37,6 +54,11 @@ def load_templates():
             return json.loads(content)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError:
+        st.error(
+            f"Could not read {TEMPLATES_FILE}. The file contains invalid JSON. Using no saved templates."
+        )
+        return []
 
 
 def save_templates(templates):
@@ -47,31 +69,22 @@ def save_templates(templates):
 
 def load_workout_plan():
     """Read the weekly workout plan from workout_plan.json."""
-    default_plan = {
-        "plan_name": "Current Program",
-        "schedule_mode": "weekly",
-        "weekly_schedule": {
-            "Monday": "",
-            "Tuesday": "",
-            "Wednesday": "",
-            "Thursday": "",
-            "Friday": "",
-            "Saturday": "",
-            "Sunday": "",
-        },
-    }
-
     try:
         with open(WORKOUT_PLAN_FILE, "r") as file:
             content = file.read().strip()
             if content == "":
-                return default_plan
+                return dict(DEFAULT_WORKOUT_PLAN)
             plan = json.loads(content)
             if "schedule_mode" not in plan:
                 plan["schedule_mode"] = "weekly"
             return plan
     except FileNotFoundError:
-        return default_plan
+        return dict(DEFAULT_WORKOUT_PLAN)
+    except json.JSONDecodeError:
+        st.error(
+            f"Could not read {WORKOUT_PLAN_FILE}. The file contains invalid JSON. Using the default plan."
+        )
+        return dict(DEFAULT_WORKOUT_PLAN)
 
 
 def save_workout_plan(workout_plan):
@@ -133,7 +146,12 @@ def get_most_recent_logged_workout_name(workouts):
     if not workouts:
         return None
 
-    return workouts[-1]["workout_name"]
+    for entry in reversed(workouts):
+        workout_name = get_entry_workout_name(entry)
+        if workout_name:
+            return workout_name
+
+    return None
 
 
 def get_last_logged_workout_name(workouts):
@@ -262,6 +280,12 @@ def load_exercise_library():
             return json.loads(content)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError:
+        st.error(
+            f"Could not read {EXERCISE_LIBRARY_FILE}. "
+            "The file contains invalid JSON. Using an empty exercise library."
+        )
+        return []
 
 
 def save_exercise_library(exercise_library):
@@ -283,12 +307,106 @@ def estimate_1rm(weight, reps):
     return (100 * weight) / (52.2 + 41.9 * math.exp(-0.055 * reps))
 
 
+def get_entry_exercise(entry):
+    """Return the exercise name from a workout entry, or an empty string."""
+    return entry.get("exercise", "")
+
+
+def get_entry_weight(entry):
+    """Return weight from a workout entry, or 0 if missing."""
+    weight = entry.get("weight", 0)
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_entry_reps(entry):
+    """Return reps from a workout entry, or 0 if missing."""
+    reps = entry.get("reps", 0)
+    try:
+        return int(reps)
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_entry_estimated_1rm(entry):
+    """Return estimated 1RM from a workout entry, or 0 if missing."""
+    estimated_1rm = entry.get("estimated_1rm", 0)
+    try:
+        return float(estimated_1rm)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_entry_volume(entry):
+    """Return volume from a workout entry, or 0 if missing."""
+    volume = entry.get("volume", 0)
+    try:
+        return float(volume)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_entry_workout_name(entry):
+    """Return workout_name from a workout entry, or an empty string."""
+    return entry.get("workout_name", "")
+
+
+def entry_has_valid_lift_data(entry):
+    """Return True when an entry has usable weight and reps for history math."""
+    return get_entry_weight(entry) > 0 and get_entry_reps(entry) > 0
+
+
+def get_suspicious_entry_warnings(weight, reps, exercise_name, workouts):
+    """
+    Return warning messages and whether the user must confirm before logging.
+
+    Catches common data-entry mistakes like 0 weight or unusually high reps/1RM.
+    """
+    warnings = []
+    needs_confirmation = False
+
+    try:
+        weight_value = float(weight)
+        reps_value = int(reps)
+    except (TypeError, ValueError):
+        warnings.append("Weight and reps must be valid numbers.")
+        return warnings, True
+
+    if weight_value == 0:
+        warnings.append("Weight is 0 lbs.")
+
+    if reps_value > 30:
+        warnings.append(f"Reps ({reps_value}) are unusually high (above 30).")
+
+    new_1rm = estimate_1rm(weight_value, reps_value)
+    exercise_entries = get_entries_for_exercise(workouts, exercise_name)
+    valid_entries = []
+    for entry in exercise_entries:
+        if entry_has_valid_lift_data(entry):
+            valid_entries.append(entry)
+
+    if valid_entries:
+        best_1rm = get_best_estimated_1rm(valid_entries)
+        if best_1rm > 0 and new_1rm > best_1rm * 1.25:
+            warnings.append(
+                f"Estimated 1RM ({round(new_1rm)} lbs) is more than 25% higher than "
+                f"your current best ({round(best_1rm)} lbs)."
+            )
+
+    if warnings:
+        needs_confirmation = True
+
+    return warnings, needs_confirmation
+
+
 def get_unique_exercises(workouts):
     """Return a sorted list of unique exercise names from all logged workouts."""
     exercise_names = []
     for entry in workouts:
-        name = entry["exercise"]
-        if name not in exercise_names:
+        name = get_entry_exercise(entry)
+        if name and name not in exercise_names:
             exercise_names.append(name)
     return sorted(exercise_names)
 
@@ -297,7 +415,7 @@ def get_entries_for_exercise(workouts, exercise_name):
     """Return all logged entries that match the selected exercise."""
     matching_entries = []
     for entry in workouts:
-        if entry["exercise"] == exercise_name:
+        if get_entry_exercise(entry) == exercise_name:
             matching_entries.append(entry)
     return matching_entries
 
@@ -397,14 +515,18 @@ def detect_prs(set_data, previous_entries):
     has_history_at_weight = False
 
     for entry in previous_entries:
-        if entry["estimated_1rm"] > best_1rm:
-            best_1rm = entry["estimated_1rm"]
-        if entry["weight"] > heaviest_weight:
-            heaviest_weight = entry["weight"]
-        if entry["weight"] == new_weight:
+        entry_1rm = get_entry_estimated_1rm(entry)
+        entry_weight = get_entry_weight(entry)
+        entry_reps = get_entry_reps(entry)
+
+        if entry_1rm > best_1rm:
+            best_1rm = entry_1rm
+        if entry_weight > heaviest_weight:
+            heaviest_weight = entry_weight
+        if entry_weight == new_weight:
             has_history_at_weight = True
-            if entry["reps"] > best_reps_at_weight:
-                best_reps_at_weight = entry["reps"]
+            if entry_reps > best_reps_at_weight:
+                best_reps_at_weight = entry_reps
 
     if new_1rm > best_1rm:
         pr_messages.append(
@@ -429,8 +551,11 @@ def get_1rm_trend_by_date(exercise_entries):
     best_by_date = {}
 
     for entry in exercise_entries:
-        entry_date = entry["date"]
-        entry_1rm = entry["estimated_1rm"]
+        entry_date = entry.get("date", "")
+        entry_1rm = get_entry_estimated_1rm(entry)
+
+        if not entry_date or entry_1rm <= 0:
+            continue
 
         if entry_date not in best_by_date:
             best_by_date[entry_date] = entry_1rm
@@ -451,8 +576,9 @@ def get_best_estimated_1rm(exercise_entries):
     """Return the highest estimated 1RM from an exercise's logged history."""
     best_1rm = 0
     for entry in exercise_entries:
-        if entry["estimated_1rm"] > best_1rm:
-            best_1rm = entry["estimated_1rm"]
+        entry_1rm = get_entry_estimated_1rm(entry)
+        if entry_1rm > best_1rm:
+            best_1rm = entry_1rm
     return best_1rm
 
 
@@ -465,14 +591,23 @@ def get_workout_targets(current_best_1rm, exercise_entries, count=5):
     """
     candidates = []
 
-    # Use logged weights to decide how far to search
-    min_weight = exercise_entries[0]["weight"]
-    max_weight = exercise_entries[0]["weight"]
+    valid_entries = []
     for entry in exercise_entries:
-        if entry["weight"] < min_weight:
-            min_weight = entry["weight"]
-        if entry["weight"] > max_weight:
-            max_weight = entry["weight"]
+        if entry_has_valid_lift_data(entry):
+            valid_entries.append(entry)
+
+    if not valid_entries:
+        return []
+
+    # Use logged weights to decide how far to search
+    min_weight = get_entry_weight(valid_entries[0])
+    max_weight = get_entry_weight(valid_entries[0])
+    for entry in valid_entries:
+        entry_weight = get_entry_weight(entry)
+        if entry_weight < min_weight:
+            min_weight = entry_weight
+        if entry_weight > max_weight:
+            max_weight = entry_weight
 
     start_weight = int(min_weight // 5 * 5)
     end_weight = int(max_weight // 5 * 5) + 101
@@ -523,9 +658,12 @@ def build_recommended_set_plan(target, num_sets=3):
     return set_plan
 
 
-def make_recommended_set_id(template_name, exercise, rank, set_number, weight, reps):
+def make_recommended_set_id(template_name, exercise_index, exercise, rank, set_number, weight, reps):
     """Return a stable ID for one recommended set in the active workout plan."""
-    return f"{template_name}_{exercise}_{rank}_{set_number}_{int(weight)}_{reps}"
+    return (
+        f"{template_name}_{exercise_index}_{exercise}_{rank}_"
+        f"{set_number}_{int(weight)}_{reps}"
+    )
 
 
 def build_active_workout_plan(template_name, selection_mode, templates, workouts):
@@ -541,11 +679,12 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
 
     exercise_plans = []
 
-    for exercise in template["exercises"]:
+    for exercise_index, exercise in enumerate(template["exercises"]):
         exercise_entries = get_entries_for_exercise(workouts, exercise)
 
         if not exercise_entries:
             exercise_plans.append({
+                "exercise_index": exercise_index,
                 "planned_exercise": exercise,
                 "exercise": exercise,
                 "swapped_to": None,
@@ -572,6 +711,7 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
                     "estimated_1rm": planned_set["estimated_1rm"],
                     "set_id": make_recommended_set_id(
                         template_name,
+                        exercise_index,
                         exercise,
                         rank,
                         planned_set["set_number"],
@@ -588,6 +728,7 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
             })
 
         exercise_plans.append({
+            "exercise_index": exercise_index,
             "planned_exercise": exercise,
             "exercise": exercise,
             "swapped_to": None,
@@ -617,19 +758,19 @@ def get_todays_exercise_name(exercise_plan):
     return exercise_plan.get("planned_exercise", exercise_plan.get("exercise", ""))
 
 
-def apply_exercise_swap_to_active_plan(planned_exercise, swapped_to):
+def apply_exercise_swap_to_active_plan(exercise_index, swapped_to):
     """
     Update only the frozen active workout plan in session_state.
 
     Swaps never change workout_templates.json — they last only for this session.
+    exercise_index keeps duplicate template exercises separate.
     """
     active_plan = st.session_state.active_workout_plan
     if active_plan is None:
         return
 
     for exercise_plan in active_plan["exercises"]:
-        plan_planned = exercise_plan.get("planned_exercise", exercise_plan.get("exercise", ""))
-        if plan_planned == planned_exercise:
+        if exercise_plan.get("exercise_index") == exercise_index:
             exercise_plan["swapped_to"] = swapped_to
             break
 
@@ -843,8 +984,20 @@ with tab_todays_workout:
             st.session_state.active_workout_plan = None
             st.session_state.completed_recommended_sets = []
 
-        # Build the plan once per workout session. Logging sets does NOT trigger this.
+        # Clear stale session data from a previous day or template.
         active_plan = st.session_state.active_workout_plan
+        if active_plan is not None and active_plan.get("generated_date") != today_key:
+            st.session_state.active_workout_plan = None
+            st.session_state.completed_recommended_sets = []
+            active_plan = None
+
+        if (
+            active_plan is not None
+            and active_plan.get("template_name") != selected_todays_template
+        ):
+            st.session_state.completed_recommended_sets = []
+
+        # Build the plan once per workout session. Logging sets does NOT trigger this.
         if (
             active_plan is None
             or active_plan.get("template_name") != selected_todays_template
@@ -872,6 +1025,7 @@ with tab_todays_workout:
 
             for exercise_plan in active_plan["exercises"]:
                 # planned_exercise = template slot; swapped_to = today's temporary replacement.
+                exercise_index = exercise_plan.get("exercise_index", 0)
                 planned_exercise = exercise_plan.get(
                     "planned_exercise",
                     exercise_plan.get("exercise", ""),
@@ -912,18 +1066,24 @@ with tab_todays_workout:
                             "Replacement exercise",
                             swap_options,
                             index=swap_index,
-                            key=f"swap_exercise_select_{selected_todays_template}_{planned_exercise}",
+                            key=(
+                                f"swap_exercise_select_{selected_todays_template}_"
+                                f"{exercise_index}_{planned_exercise}"
+                            ),
                         )
 
                         if st.button(
                             "Apply Swap",
-                            key=f"apply_swap_button_{selected_todays_template}_{planned_exercise}",
+                            key=(
+                                f"apply_swap_button_{selected_todays_template}_"
+                                f"{exercise_index}_{planned_exercise}"
+                            ),
                         ):
                             if replacement_exercise == "Use planned exercise":
-                                apply_exercise_swap_to_active_plan(planned_exercise, None)
+                                apply_exercise_swap_to_active_plan(exercise_index, None)
                             else:
                                 apply_exercise_swap_to_active_plan(
-                                    planned_exercise,
+                                    exercise_index,
                                     replacement_exercise,
                                 )
                             st.rerun()
@@ -959,7 +1119,8 @@ with tab_todays_workout:
                             # Target values come from the frozen plan.
                             # Actual inputs let the user log what they really performed.
                             input_key_base = (
-                                f"{selected_todays_template}_{planned_exercise}_{rank}_{set_number}"
+                                f"{selected_todays_template}_{exercise_index}_"
+                                f"{planned_exercise}_{rank}_{set_number}"
                             )
 
                             st.markdown(f"**Set {set_number}**")
@@ -988,10 +1149,27 @@ with tab_todays_workout:
                                     key=f"actual_reps_{input_key_base}",
                                 )
 
+                                suspicious_warnings, needs_confirmation = get_suspicious_entry_warnings(
+                                    actual_weight,
+                                    actual_reps,
+                                    todays_exercise,
+                                    todays_workouts,
+                                )
+                                for warning_message in suspicious_warnings:
+                                    st.warning(warning_message)
+
+                                confirm_suspicious_set = True
+                                if needs_confirmation:
+                                    confirm_suspicious_set = st.checkbox(
+                                        "I confirm this set looks correct",
+                                        key=f"confirm_suspicious_{input_key_base}",
+                                    )
+
                                 if button_col.button(
                                     "Log Set",
                                     key=f"log_recommended_set_{set_id}",
                                     use_container_width=True,
+                                    disabled=needs_confirmation and not confirm_suspicious_set,
                                 ):
                                     actual_estimated_1rm = round(
                                         estimate_1rm(actual_weight, actual_reps)
@@ -1085,129 +1263,160 @@ with tab_manual_log:
     st.caption("Log sets for any exercise. Each set is saved as its own entry.")
 
     exercise_library = load_exercise_library()
-    exercise_names = []
-    for exercise in exercise_library:
-        exercise_names.append(exercise["name"])
 
-    with st.form("manual_log_form"):
-        workout_name = st.text_input(
-            "Workout name",
-            value="Push Day",
-            help="Use the same name as a saved template if you want rotation mode to track it.",
-        )
-        selected_exercise_name = st.selectbox("Exercise", exercise_names, key="manual_log_exercise")
-        selected_exercise = get_exercise_by_name(exercise_library, selected_exercise_name)
-        exercise_name = selected_exercise_name
+    if not exercise_library:
+        st.info("Add exercises in the Exercise Library tab before using Manual Log.")
+    else:
+        exercise_names = []
+        for exercise in exercise_library:
+            exercise_names.append(exercise["name"])
 
-        if selected_exercise:
-            detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
-            detail_col1.caption("Category")
-            detail_col1.write(selected_exercise["category"])
-            detail_col2.caption("Primary muscle")
-            detail_col2.write(selected_exercise["primary_muscle"])
-            detail_col3.caption("Rep range")
-            detail_col3.write(f"{selected_exercise['rep_min']}-{selected_exercise['rep_max']} reps")
-            detail_col4.caption("Weight step")
-            detail_col4.write(f"{selected_exercise['weight_increment']} lbs")
-
-            num_sets = st.number_input(
-                "Number of sets",
-                min_value=1,
-                max_value=10,
-                value=selected_exercise["default_sets"],
-                step=1,
-                key=f"num_sets_{selected_exercise_name}",
+        with st.form("manual_log_form"):
+            workout_name = st.text_input(
+                "Workout name",
+                value="Push Day",
+                help="Use the same name as a saved template if you want rotation mode to track it.",
             )
-            weight_step = selected_exercise["weight_increment"]
-        else:
-            num_sets = st.number_input("Number of sets", min_value=1, max_value=10, value=3, step=1)
-            weight_step = 5.0
+            selected_exercise_name = st.selectbox("Exercise", exercise_names, key="manual_log_exercise")
+            selected_exercise = get_exercise_by_name(exercise_library, selected_exercise_name)
+            exercise_name = selected_exercise_name
 
-        st.caption("Enter weight and reps for each set.")
-        header_set, header_weight, header_reps = st.columns([1, 2, 2])
-        header_set.write("**Set**")
-        header_weight.write("**Weight (lbs)**")
-        header_reps.write("**Reps**")
+            if selected_exercise:
+                detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
+                detail_col1.caption("Category")
+                detail_col1.write(selected_exercise["category"])
+                detail_col2.caption("Primary muscle")
+                detail_col2.write(selected_exercise["primary_muscle"])
+                detail_col3.caption("Rep range")
+                detail_col3.write(f"{selected_exercise['rep_min']}-{selected_exercise['rep_max']} reps")
+                detail_col4.caption("Weight step")
+                detail_col4.write(f"{selected_exercise['weight_increment']} lbs")
 
-        logged_sets = []
-        for set_number in range(1, int(num_sets) + 1):
-            col_set, col_weight, col_reps = st.columns([1, 2, 2])
-            col_set.write(f"Set {set_number}")
+                num_sets = st.number_input(
+                    "Number of sets",
+                    min_value=1,
+                    max_value=10,
+                    value=selected_exercise["default_sets"],
+                    step=1,
+                    key=f"num_sets_{selected_exercise_name}",
+                )
+                weight_step = selected_exercise["weight_increment"]
+            else:
+                num_sets = st.number_input("Number of sets", min_value=1, max_value=10, value=3, step=1)
+                weight_step = 5.0
 
-            weight = col_weight.number_input(
-                "Weight (lbs)",
-                min_value=0.0,
-                step=float(weight_step),
-                key=f"weight_{set_number}",
-                label_visibility="collapsed",
-            )
-            reps = col_reps.number_input(
-                "Reps",
-                min_value=1,
-                step=1,
-                key=f"reps_{set_number}",
-                label_visibility="collapsed",
-            )
+            st.caption("Enter weight and reps for each set.")
+            header_set, header_weight, header_reps = st.columns([1, 2, 2])
+            header_set.write("**Set**")
+            header_weight.write("**Weight (lbs)**")
+            header_reps.write("**Reps**")
 
-            logged_sets.append({
-                "set_number": set_number,
-                "weight": weight,
-                "reps": reps,
-            })
+            logged_sets = []
+            for set_number in range(1, int(num_sets) + 1):
+                col_set, col_weight, col_reps = st.columns([1, 2, 2])
+                col_set.write(f"Set {set_number}")
 
-        # Each set is saved separately, so volume = weight * reps for one set
-        for set_data in logged_sets:
-            set_data["estimated_1rm"] = estimate_1rm(set_data["weight"], set_data["reps"])
-            set_data["volume"] = set_data["weight"] * set_data["reps"]
-
-        notes = st.text_area(
-            "Notes (optional)",
-            placeholder="How did the set feel? Any form cues?",
-        )
-
-        with st.expander("Preview logged sets"):
-            st.write("**Exercise:**", exercise_name)
-            for set_data in logged_sets:
-                st.write(
-                    f"Set {set_data['set_number']}: "
-                    f"{int(set_data['weight'])} lbs × {set_data['reps']} reps → "
-                    f"{round(set_data['estimated_1rm'])} lb 1RM, "
-                    f"{round(set_data['volume'])} lb volume"
+                weight = col_weight.number_input(
+                    "Weight (lbs)",
+                    min_value=0.0,
+                    step=float(weight_step),
+                    key=f"weight_{set_number}",
+                    label_visibility="collapsed",
+                )
+                reps = col_reps.number_input(
+                    "Reps",
+                    min_value=1,
+                    step=1,
+                    key=f"reps_{set_number}",
+                    label_visibility="collapsed",
                 )
 
-            if notes:
-                st.write("**Notes:**", notes)
+                logged_sets.append({
+                    "set_number": set_number,
+                    "weight": weight,
+                    "reps": reps,
+                })
 
-        submitted = st.form_submit_button("Log Exercise", type="primary", use_container_width=True)
+            # Each set is saved separately, so volume = weight * reps for one set
+            for set_data in logged_sets:
+                set_data["estimated_1rm"] = estimate_1rm(set_data["weight"], set_data["reps"])
+                set_data["volume"] = set_data["weight"] * set_data["reps"]
 
-    if submitted:
-        workouts = load_workouts()
-        today = str(date.today())
-        previous_entries = get_entries_for_exercise(workouts, exercise_name)
-        pr_messages = []
+            notes = st.text_area(
+                "Notes (optional)",
+                placeholder="How did the set feel? Any form cues?",
+            )
 
-        for set_data in logged_sets:
-            for message in detect_prs(set_data, previous_entries):
-                pr_messages.append(message)
+            with st.expander("Preview logged sets"):
+                st.write("**Exercise:**", exercise_name)
+                for set_data in logged_sets:
+                    st.write(
+                        f"Set {set_data['set_number']}: "
+                        f"{int(set_data['weight'])} lbs × {set_data['reps']} reps → "
+                        f"{round(set_data['estimated_1rm'])} lb 1RM, "
+                        f"{round(set_data['volume'])} lb volume"
+                    )
 
-            new_entry = {
-                "date": today,
-                "workout_name": workout_name,
-                "exercise": exercise_name,
-                "set_number": set_data["set_number"],
-                "weight": set_data["weight"],
-                "reps": set_data["reps"],
-                "estimated_1rm": round(set_data["estimated_1rm"]),
-                "volume": round(set_data["volume"]),
-                "notes": notes,
-            }
-            workouts.append(new_entry)
+                if notes:
+                    st.write("**Notes:**", notes)
 
-        save_workouts(workouts)
-        st.success(f"Exercise logged! {int(num_sets)} sets saved.")
+            needs_manual_confirmation = False
+            for set_data in logged_sets:
+                set_warnings, set_needs_confirmation = get_suspicious_entry_warnings(
+                    set_data["weight"],
+                    set_data["reps"],
+                    exercise_name,
+                    load_workouts(),
+                )
+                for warning_message in set_warnings:
+                    st.warning(
+                        f"Set {set_data['set_number']}: {warning_message}"
+                    )
+                if set_needs_confirmation:
+                    needs_manual_confirmation = True
 
-        for message in pr_messages:
-            st.success(message)
+            confirm_suspicious_manual_log = True
+            if needs_manual_confirmation:
+                confirm_suspicious_manual_log = st.checkbox(
+                    "I confirm these sets look correct",
+                    key="confirm_suspicious_manual_log",
+                )
+
+            submitted = st.form_submit_button(
+                "Log Exercise",
+                type="primary",
+                use_container_width=True,
+                disabled=needs_manual_confirmation and not confirm_suspicious_manual_log,
+            )
+
+        if submitted:
+            workouts = load_workouts()
+            today = str(date.today())
+            previous_entries = get_entries_for_exercise(workouts, exercise_name)
+            pr_messages = []
+
+            for set_data in logged_sets:
+                for message in detect_prs(set_data, previous_entries):
+                    pr_messages.append(message)
+
+                new_entry = {
+                    "date": today,
+                    "workout_name": workout_name,
+                    "exercise": exercise_name,
+                    "set_number": set_data["set_number"],
+                    "weight": set_data["weight"],
+                    "reps": set_data["reps"],
+                    "estimated_1rm": round(set_data["estimated_1rm"]),
+                    "volume": round(set_data["volume"]),
+                    "notes": notes,
+                }
+                workouts.append(new_entry)
+
+            save_workouts(workouts)
+            st.success(f"Exercise logged! {int(num_sets)} sets saved.")
+
+            for message in pr_messages:
+                st.success(message)
 
 
 # --- Tab: Exercise History ---
@@ -1232,14 +1441,19 @@ with tab_exercise_history:
         highest_volume = 0
 
         for entry in exercise_entries:
-            if entry["estimated_1rm"] > best_1rm:
-                best_1rm = entry["estimated_1rm"]
-            if entry["weight"] > heaviest_weight:
-                heaviest_weight = entry["weight"]
-            if entry["reps"] > highest_reps:
-                highest_reps = entry["reps"]
-            if entry["volume"] > highest_volume:
-                highest_volume = entry["volume"]
+            entry_1rm = get_entry_estimated_1rm(entry)
+            entry_weight = get_entry_weight(entry)
+            entry_reps = get_entry_reps(entry)
+            entry_volume = get_entry_volume(entry)
+
+            if entry_1rm > best_1rm:
+                best_1rm = entry_1rm
+            if entry_weight > heaviest_weight:
+                heaviest_weight = entry_weight
+            if entry_reps > highest_reps:
+                highest_reps = entry_reps
+            if entry_volume > highest_volume:
+                highest_volume = entry_volume
 
         st.divider()
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
