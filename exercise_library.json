@@ -1,0 +1,191 @@
+[
+  {
+    "name": "Bench Press",
+    "category": "Push",
+    "primary_muscle": "Chest",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 8,
+    "weight_increment": 5
+  },
+  {
+    "name": "Squat",
+    "category": "Legs",
+    "primary_muscle": "Quads",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 8,
+    "weight_increment": 5
+  },
+  {
+    "name": "Deadlift",
+    "category": "Pull",
+    "primary_muscle": "Back",
+    "default_sets": 3,
+    "rep_min": 3,
+    "rep_max": 6,
+    "weight_increment": 5
+  },
+  {
+    "name": "Overhead Press",
+    "category": "Push",
+    "primary_muscle": "Shoulders",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 8,
+    "weight_increment": 5
+  },
+  {
+    "name": "Incline Dumbbell Press",
+    "category": "Push",
+    "primary_muscle": "Chest",
+    "default_sets": 3,
+    "rep_min": 8,
+    "rep_max": 12,
+    "weight_increment": 5
+  },
+  {
+    "name": "Chest Supported Row",
+    "category": "Pull",
+    "primary_muscle": "Back",
+    "default_sets": 3,
+    "rep_min": 8,
+    "rep_max": 12,
+    "weight_increment": 5
+  },
+  {
+    "name": "Lat Pulldown",
+    "category": "Pull",
+    "primary_muscle": "Back",
+    "default_sets": 3,
+    "rep_min": 8,
+    "rep_max": 12,
+    "weight_increment": 5
+  },
+  {
+    "name": "Pull Up",
+    "category": "Pull",
+    "primary_muscle": "Back",
+    "default_sets": 3,
+    "rep_min": 5,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Romanian Deadlift",
+    "category": "Legs",
+    "primary_muscle": "Hamstrings",
+    "default_sets": 3,
+    "rep_min": 6,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Leg Press",
+    "category": "Legs",
+    "primary_muscle": "Quads",
+    "default_sets": 3,
+    "rep_min": 8,
+    "rep_max": 12,
+    "weight_increment": 10
+  },
+  {
+    "name": "Leg Curl",
+    "category": "Legs",
+    "primary_muscle": "Hamstrings",
+    "default_sets": 3,
+    "rep_min": 10,
+    "rep_max": 15,
+    "weight_increment": 5
+  },
+  {
+    "name": "Lateral Raise",
+    "category": "Push",
+    "primary_muscle": "Shoulders",
+    "default_sets": 3,
+    "rep_min": 12,
+    "rep_max": 15,
+    "weight_increment": 5
+  },
+  {
+    "name": "Triceps Pressdown",
+    "category": "Push",
+    "primary_muscle": "Triceps",
+    "default_sets": 3,
+    "rep_min": 10,
+    "rep_max": 15,
+    "weight_increment": 5
+  },
+  {
+    "name": "Dumbbell Curl",
+    "category": "Pull",
+    "primary_muscle": "Biceps",
+    "default_sets": 3,
+    "rep_min": 10,
+    "rep_max": 15,
+    "weight_increment": 5
+  },
+  {
+    "name": "Calf Raise",
+    "category": "Legs",
+    "primary_muscle": "Calves",
+    "default_sets": 3,
+    "rep_min": 12,
+    "rep_max": 15,
+    "weight_increment": 5
+  },
+  {
+    "name": "Pec Deck",
+    "category": "Push",
+    "primary_muscle": "Chest",
+    "default_sets": 3,
+    "rep_min": 5,
+    "rep_max": 9,
+    "weight_increment": 5
+  },
+  {
+    "name": "Overhead Tricep Extension",
+    "category": "Arms",
+    "primary_muscle": "Triceps",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Bicep Curl Machine",
+    "category": "Arms",
+    "primary_muscle": "Biceps",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Lateral Raise Machine (Elbows pads)",
+    "category": "Shoulders",
+    "primary_muscle": "Side Delts",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Horizontal Row Machine",
+    "category": "Back",
+    "primary_muscle": "Upper Back",
+    "default_sets": 3,
+    "rep_min": 4,
+    "rep_max": 10,
+    "weight_increment": 5
+  },
+  {
+    "name": "Hip Thrust",
+    "category": "Lower Body",
+    "primary_muscle": "Glutes",
+    "default_sets": 3,
+    "rep_min": 3,
+    "rep_max": 12,
+    "weight_increment": 5
+  }
+]

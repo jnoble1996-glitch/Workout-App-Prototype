@@ -1,0 +1,48 @@
+[
+  {
+    "template_name": "Upper Body A",
+    "exercises": [
+      "Bench Press",
+      "T-Bar Row",
+      "Lateral Raise",
+      "Overhead Tricep Press",
+      "Preacher Curl"
+    ]
+  },
+  {
+    "template_name": "Lower Body A",
+    "exercises": [
+      "Hip Thrust",
+      "Seated Leg Curl",
+      "Leg Extension",
+      "Back Extension"
+    ]
+  },
+  {
+    "template_name": "Lower Body B",
+    "exercises": [
+      "Leg Extension",
+      "Laying Leg Curl",
+      "45-degree Glute Extension",
+      "Calf Raise"
+    ]
+  },
+  {
+    "template_name": "Push",
+    "exercises": [
+      "Bench Press",
+      "Tricep Pushdown (Unilateral)",
+      "Lateral Raise",
+      "Cable Twist"
+    ]
+  },
+  {
+    "template_name": "Pull",
+    "exercises": [
+      "Preacher Curl",
+      "Lat Pulldown (Cable)",
+      "Back Fly (on pec deck machine)",
+      "Oblique Side Raise"
+    ]
+  }
+]

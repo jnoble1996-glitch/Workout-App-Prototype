@@ -1,0 +1,13 @@
+{
+  "plan_name": "Current Program",
+  "schedule_mode": "weekly",
+  "weekly_schedule": {
+    "Monday": "Upper Body A",
+    "Tuesday": "Lower Body A",
+    "Wednesday": "",
+    "Thursday": "Push",
+    "Friday": "Pull",
+    "Saturday": "Lower Body B",
+    "Sunday": ""
+  }
+}
