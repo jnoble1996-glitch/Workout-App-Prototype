@@ -546,7 +546,9 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
 
         if not exercise_entries:
             exercise_plans.append({
+                "planned_exercise": exercise,
                 "exercise": exercise,
+                "swapped_to": None,
                 "has_history": False,
                 "recommendations": [],
             })
@@ -586,7 +588,9 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
             })
 
         exercise_plans.append({
+            "planned_exercise": exercise,
             "exercise": exercise,
+            "swapped_to": None,
             "has_history": True,
             "recommendations": recommendations,
         })
@@ -596,6 +600,95 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
         "selection_mode": selection_mode,
         "generated_date": str(date.today()),
         "exercises": exercise_plans,
+    }
+
+
+def get_todays_exercise_name(exercise_plan):
+    """
+    Return the exercise the user will perform today.
+
+    planned_exercise = what the saved template scheduled.
+    swapped_to = temporary replacement for this session only (or None).
+    """
+    swapped_to = exercise_plan.get("swapped_to")
+    if swapped_to:
+        return swapped_to
+
+    return exercise_plan.get("planned_exercise", exercise_plan.get("exercise", ""))
+
+
+def apply_exercise_swap_to_active_plan(planned_exercise, swapped_to):
+    """
+    Update only the frozen active workout plan in session_state.
+
+    Swaps never change workout_templates.json — they last only for this session.
+    """
+    active_plan = st.session_state.active_workout_plan
+    if active_plan is None:
+        return
+
+    for exercise_plan in active_plan["exercises"]:
+        plan_planned = exercise_plan.get("planned_exercise", exercise_plan.get("exercise", ""))
+        if plan_planned == planned_exercise:
+            exercise_plan["swapped_to"] = swapped_to
+            break
+
+
+def get_last_swap_for_exercise(workouts, workout_name, planned_exercise):
+    """
+    Find the most recent swap session for a planned exercise in a workout template.
+
+    Looks for logged sets where planned_exercise and swapped_from match the template
+    slot, then groups sets from the most recent date.
+    """
+    matching_entries = []
+
+    for entry in workouts:
+        if entry.get("workout_name") != workout_name:
+            continue
+        if entry.get("planned_exercise") != planned_exercise:
+            continue
+        if entry.get("swapped_from") != planned_exercise:
+            continue
+        if not entry.get("swapped_to"):
+            continue
+
+        matching_entries.append(entry)
+
+    if not matching_entries:
+        return None
+
+    # Use the most recent date that has swap entries for this planned exercise.
+    dates = []
+    for entry in matching_entries:
+        entry_date = entry.get("date", "")
+        if entry_date and entry_date not in dates:
+            dates.append(entry_date)
+
+    dates.sort(reverse=True)
+    most_recent_date = dates[0]
+
+    session_entries = []
+    for entry in matching_entries:
+        if entry.get("date") == most_recent_date:
+            session_entries.append(entry)
+
+    session_entries.sort(key=lambda item: item.get("set_number", 0))
+
+    swapped_to = session_entries[0].get("swapped_to", "")
+    logged_sets = []
+
+    for entry in session_entries:
+        logged_sets.append({
+            "set_number": entry.get("set_number", "?"),
+            "weight": entry.get("weight", 0),
+            "reps": entry.get("reps", 0),
+        })
+
+    return {
+        "swapped_to": swapped_to,
+        "date": most_recent_date,
+        "sets": logged_sets,
     }
 
 
@@ -772,30 +865,88 @@ with tab_todays_workout:
         st.info("Recommendations are locked for this workout. Use Refresh recommendations to recalculate.")
 
         if active_plan:
+            swap_exercise_library = load_exercise_library()
+            swap_exercise_names = []
+            for library_exercise in swap_exercise_library:
+                swap_exercise_names.append(library_exercise["name"])
+
             for exercise_plan in active_plan["exercises"]:
-                exercise = exercise_plan["exercise"]
+                # planned_exercise = template slot; swapped_to = today's temporary replacement.
+                planned_exercise = exercise_plan.get(
+                    "planned_exercise",
+                    exercise_plan.get("exercise", ""),
+                )
+                swapped_to = exercise_plan.get("swapped_to")
+                todays_exercise = get_todays_exercise_name(exercise_plan)
 
-                if not exercise_plan["has_history"]:
-                    with st.container(border=True):
-                        st.markdown(f"**{exercise}**")
+                last_swap = get_last_swap_for_exercise(
+                    todays_workouts,
+                    selected_todays_template,
+                    planned_exercise,
+                )
+
+                with st.container(border=True):
+                    st.markdown(f"**Planned:** {planned_exercise}")
+                    if swapped_to:
+                        st.markdown(f"**Today's exercise:** {todays_exercise}")
+                        st.caption(f"Swapped from {planned_exercise}")
+
+                    if last_swap:
+                        st.info(
+                            f"Last time you did this workout, you swapped {planned_exercise} "
+                            f"for {last_swap['swapped_to']}."
+                        )
+                        for logged_set in last_swap["sets"]:
+                            st.write(
+                                f"Set {logged_set['set_number']}: "
+                                f"{int(logged_set['weight'])} lbs × {logged_set['reps']}"
+                            )
+
+                    with st.expander("Swap Exercise", expanded=False):
+                        swap_options = ["Use planned exercise"] + swap_exercise_names
+                        swap_index = 0
+                        if swapped_to and swapped_to in swap_options:
+                            swap_index = swap_options.index(swapped_to)
+
+                        replacement_exercise = st.selectbox(
+                            "Replacement exercise",
+                            swap_options,
+                            index=swap_index,
+                            key=f"swap_exercise_select_{selected_todays_template}_{planned_exercise}",
+                        )
+
+                        if st.button(
+                            "Apply Swap",
+                            key=f"apply_swap_button_{selected_todays_template}_{planned_exercise}",
+                        ):
+                            if replacement_exercise == "Use planned exercise":
+                                apply_exercise_swap_to_active_plan(planned_exercise, None)
+                            else:
+                                apply_exercise_swap_to_active_plan(
+                                    planned_exercise,
+                                    replacement_exercise,
+                                )
+                            st.rerun()
+
+                    if not exercise_plan["has_history"]:
                         st.caption("No history yet. Log this exercise in Manual Log first.")
-                    continue
+                        continue
 
-                if not exercise_plan["recommendations"]:
-                    with st.container(border=True):
-                        st.markdown(f"**{exercise}**")
+                    if not exercise_plan["recommendations"]:
                         st.caption("No target options found in the search range.")
-                    continue
+                        continue
 
                 for recommendation in exercise_plan["recommendations"]:
                     rank = recommendation["rank"]
 
                     with st.container(border=True):
-                        st.markdown(f"**{exercise}** · Recommendation #{rank}")
+                        st.markdown(f"**{planned_exercise}** · Recommendation #{rank}")
                         st.caption(
                             f"Set 1 projected 1RM: {recommendation['projected_1rm']} lbs "
                             f"(+{recommendation['improvement']} lbs)"
                         )
+                        if swapped_to:
+                            st.caption(f"Logging as: {todays_exercise}")
                         st.markdown("**Set plan**")
 
                         for planned_set in recommendation["sets"]:
@@ -808,7 +959,7 @@ with tab_todays_workout:
                             # Target values come from the frozen plan.
                             # Actual inputs let the user log what they really performed.
                             input_key_base = (
-                                f"{selected_todays_template}_{exercise}_{rank}_{set_number}"
+                                f"{selected_todays_template}_{planned_exercise}_{rank}_{set_number}"
                             )
 
                             st.markdown(f"**Set {set_number}**")
@@ -848,10 +999,12 @@ with tab_todays_workout:
                                     logged_weight = int(actual_weight)
                                     logged_reps = int(actual_reps)
                                     workouts = load_workouts()
+                                    # exercise = what was actually performed.
+                                    # planned_exercise = what the template scheduled.
                                     new_entry = {
                                         "date": str(date.today()),
                                         "workout_name": selected_todays_template,
-                                        "exercise": exercise,
+                                        "exercise": todays_exercise,
                                         "set_number": set_number,
                                         "weight": logged_weight,
                                         "reps": logged_reps,
@@ -863,6 +1016,12 @@ with tab_todays_workout:
                                         "target_estimated_1rm": planned_set["estimated_1rm"],
                                         "logged_from": "Today's Workout",
                                     }
+
+                                    if swapped_to:
+                                        new_entry["planned_exercise"] = planned_exercise
+                                        new_entry["swapped_from"] = planned_exercise
+                                        new_entry["swapped_to"] = swapped_to
+
                                     workouts.append(new_entry)
                                     save_workouts(workouts)
                                     st.session_state.completed_recommended_sets.append(set_id)

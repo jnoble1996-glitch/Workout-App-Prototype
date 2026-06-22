@@ -427,5 +427,23 @@
     "estimated_1rm": 285,
     "volume": 980,
     "notes": ""
+  },
+  {
+    "date": "2026-06-22",
+    "workout_name": "Upper Body A",
+    "exercise": "Incline Dumbbell Press",
+    "set_number": 1,
+    "weight": 180,
+    "reps": 9,
+    "estimated_1rm": 232,
+    "volume": 1620,
+    "notes": "",
+    "target_weight": 235,
+    "target_reps": 9,
+    "target_estimated_1rm": 302,
+    "logged_from": "Today's Workout",
+    "planned_exercise": "Bench Press",
+    "swapped_from": "Bench Press",
+    "swapped_to": "Incline Dumbbell Press"
   }
 ]
