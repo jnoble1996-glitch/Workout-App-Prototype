@@ -1,12 +1,14 @@
 import streamlit as st
 import math
 import json
-from datetime import date
+import os
+from datetime import date, datetime
 
 WORKOUTS_FILE = "workouts.json"
 TEMPLATES_FILE = "workout_templates.json"
 EXERCISE_LIBRARY_FILE = "exercise_library.json"
 WORKOUT_PLAN_FILE = "workout_plan.json"
+BACKUPS_DIR = "backups"
 
 DEFAULT_WORKOUT_PLAN = {
     "plan_name": "Current Program",
@@ -42,6 +44,36 @@ def save_workouts(workouts):
     """Write all logged workouts to workouts.json."""
     with open(WORKOUTS_FILE, "w") as file:
         json.dump(workouts, file, indent=2)
+
+
+def create_workouts_backup(reason):
+    """
+    Save a copy of workouts.json before an edit or delete.
+
+    Backups are stored in backups/ so workout history can be recovered manually
+    if something is changed or deleted by mistake.
+    """
+    if not os.path.exists(WORKOUTS_FILE):
+        return True
+
+    try:
+        os.makedirs(BACKUPS_DIR, exist_ok=True)
+
+        with open(WORKOUTS_FILE, "r") as source_file:
+            backup_content = source_file.read()
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        safe_reason = reason.replace(" ", "_")
+        backup_filename = f"workouts_backup_{timestamp}_{safe_reason}.json"
+        backup_path = os.path.join(BACKUPS_DIR, backup_filename)
+
+        with open(backup_path, "w") as backup_file:
+            backup_file.write(backup_content)
+
+        return True
+    except OSError as error:
+        st.warning(f"Could not create workout backup: {error}")
+        return False
 
 
 def load_templates():
@@ -500,6 +532,17 @@ def delete_matching_exercise_entries(workouts, entry_date, workout_name, exercis
     return remaining_entries
 
 
+def collect_matching_exercise_entries(workouts, entry_date, workout_name, exercise):
+    """Return copies of entries that match the same date, workout, and exercise."""
+    matching_entries = []
+
+    for entry in workouts:
+        if entry.get("date") == entry_date and entry.get("workout_name") == workout_name and entry.get("exercise") == exercise:
+            matching_entries.append(dict(entry))
+
+    return matching_entries
+
+
 def detect_prs(set_data, previous_entries):
     """Return PR messages for one new set compared to previous history."""
     pr_messages = []
@@ -851,6 +894,12 @@ if "delete_set_index" not in st.session_state:
 
 if "delete_exercise_info" not in st.session_state:
     st.session_state.delete_exercise_info = None
+
+if "last_deleted_entries" not in st.session_state:
+    st.session_state.last_deleted_entries = []
+
+if "last_delete_description" not in st.session_state:
+    st.session_state.last_delete_description = ""
 
 if "template_exercises" not in st.session_state:
     st.session_state.template_exercises = []
@@ -1851,6 +1900,22 @@ with tab_data:
 
     with st.expander("Edit Workout History"):
         st.caption("Filter first, then edit the exact row you need.")
+        st.caption("Backups are saved automatically before edits and deletes.")
+
+        # Undo only works during the current Streamlit session (until the app reloads).
+        if st.session_state.last_deleted_entries:
+            st.info(f"Last delete: {st.session_state.last_delete_description}")
+
+            if st.button("Undo Last Delete", key="undo_last_delete_button"):
+                workouts = load_workouts()
+                for deleted_entry in st.session_state.last_deleted_entries:
+                    workouts.append(deleted_entry)
+                save_workouts(workouts)
+                st.session_state.last_deleted_entries = []
+                st.session_state.last_delete_description = ""
+                st.success("Last delete undone.")
+                st.rerun()
+
         editable_workouts = load_workouts()
 
         if not editable_workouts:
@@ -1997,7 +2062,13 @@ with tab_data:
                         disabled=not confirm_delete_set,
                         type="primary",
                     ):
+                        create_workouts_backup("before_delete_set")
                         workouts_after_delete = load_workouts()
+                        deleted_entry = dict(workouts_after_delete[delete_set_index])
+                        st.session_state.last_deleted_entries = [deleted_entry]
+                        st.session_state.last_delete_description = (
+                            f"Deleted 1 set: {exercise_name}, {int(weight)} lbs × {reps}"
+                        )
                         del workouts_after_delete[delete_set_index]
                         save_workouts(workouts_after_delete)
                         st.session_state.delete_set_index = None
@@ -2045,7 +2116,19 @@ with tab_data:
                     disabled=not confirm_delete_exercise,
                     type="primary",
                 ):
+                    create_workouts_backup("before_delete_exercise")
                     workouts_after_delete = load_workouts()
+                    deleted_entries = collect_matching_exercise_entries(
+                        workouts_after_delete,
+                        entry_date,
+                        workout_name,
+                        exercise_name,
+                    )
+                    st.session_state.last_deleted_entries = deleted_entries
+                    st.session_state.last_delete_description = (
+                        f"Deleted {len(deleted_entries)} sets for {exercise_name} "
+                        f"from {workout_name} on {entry_date}"
+                    )
                     workouts_after_delete = delete_matching_exercise_entries(
                         workouts_after_delete,
                         entry_date,
@@ -2130,6 +2213,7 @@ with tab_data:
                         key=f"save_workout_history_button_{edit_index}",
                         type="primary",
                     ):
+                        create_workouts_backup("before_edit")
                         # Start from the existing entry so optional fields are preserved.
                         updated_entry = dict(selected_entry)
                         updated_entry["date"] = edited_date.strip()
