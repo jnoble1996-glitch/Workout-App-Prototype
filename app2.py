@@ -14,6 +14,9 @@ WORKOUT_PLAN_FILE = "workout_plan.json"
 DATABASE_FILE = "workout_app.db"
 BACKUPS_DIR = "backups"
 
+# Temporary single-user id until authentication is added.
+DEFAULT_USER_ID = "local_user"
+
 DEFAULT_WORKOUT_PLAN = {
     "plan_name": "Current Program",
     "schedule_mode": "weekly",
@@ -62,6 +65,33 @@ TEXT_WORKOUT_DB_COLUMNS = [
 ]
 
 
+def get_current_user_id():
+    """
+    Return the active user id for workout history.
+
+    Hardcoded to local_user for now. Later, auth can return the logged-in user.
+    """
+    return DEFAULT_USER_ID
+
+
+def _ensure_workouts_user_id_column(connection):
+    """Add user_id to older workout tables and backfill existing rows."""
+    cursor = connection.execute("PRAGMA table_info(workouts)")
+    column_names = [row[1] for row in cursor.fetchall()]
+
+    if "user_id" not in column_names:
+        connection.execute(
+            """
+            ALTER TABLE workouts
+            ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local_user'
+            """
+        )
+        connection.execute(
+            "UPDATE workouts SET user_id = ? WHERE user_id IS NULL OR user_id = ''",
+            (DEFAULT_USER_ID,),
+        )
+
+
 def initialize_database():
     """Create the local SQLite database table for workout history."""
     with sqlite3.connect(DATABASE_FILE) as connection:
@@ -69,6 +99,7 @@ def initialize_database():
             """
             CREATE TABLE IF NOT EXISTS workouts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT 'local_user',
                 date TEXT,
                 workout_name TEXT,
                 exercise TEXT,
@@ -90,13 +121,23 @@ def initialize_database():
             )
             """
         )
+        _ensure_workouts_user_id_column(connection)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workouts_user_id ON workouts (user_id)"
+        )
 
 
-def get_workout_table_count():
-    """Return the number of workout rows currently stored in SQLite."""
+def get_workout_table_count(user_id=None):
+    """Return the number of workout rows stored in SQLite."""
     initialize_database()
     with sqlite3.connect(DATABASE_FILE) as connection:
-        cursor = connection.execute("SELECT COUNT(*) FROM workouts")
+        if user_id is None:
+            cursor = connection.execute("SELECT COUNT(*) FROM workouts")
+        else:
+            cursor = connection.execute(
+                "SELECT COUNT(*) FROM workouts WHERE user_id = ?",
+                (user_id,),
+            )
         return cursor.fetchone()[0]
 
 
@@ -143,7 +184,7 @@ def prepare_workout_row(entry):
 
     extra_fields = {}
     for key, value in entry.items():
-        if key not in WORKOUT_DB_COLUMNS and key not in ["id", "extra_json"]:
+        if key not in WORKOUT_DB_COLUMNS and key not in ["id", "extra_json", "user_id"]:
             extra_fields[key] = value
 
     row["extra_json"] = json.dumps(extra_fields) if extra_fields else ""
@@ -179,7 +220,8 @@ def migrate_workouts_json_to_sqlite_if_needed():
     """
     initialize_database()
 
-    if get_workout_table_count() > 0:
+    user_id = get_current_user_id()
+    if get_workout_table_count(user_id) > 0:
         return
 
     if not os.path.exists(WORKOUTS_FILE):
@@ -210,24 +252,26 @@ def migrate_workouts_json_to_sqlite_if_needed():
 
     try:
         backup_workouts_json_for_migration()
-        save_workouts(valid_entries)
+        save_workouts_for_user(valid_entries, user_id)
         st.success(f"Migrated {len(valid_entries)} workout history entries to SQLite.")
     except OSError as error:
         st.warning(f"Could not back up {WORKOUTS_FILE} before migration: {error}")
 
 
-def load_workouts():
+def load_workouts_for_user(user_id):
     """
-    Read workout history from SQLite.
+    Read one user's workout history from SQLite.
 
-    The rest of the app can keep calling load_workouts() like before, even
-    though workouts.json is no longer the main workout-history store.
+    Callers that need auth later can pass the logged-in user id directly.
     """
     initialize_database()
 
     with sqlite3.connect(DATABASE_FILE) as connection:
         connection.row_factory = sqlite3.Row
-        cursor = connection.execute("SELECT * FROM workouts ORDER BY id")
+        cursor = connection.execute(
+            "SELECT * FROM workouts WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
         rows = cursor.fetchall()
 
     workouts = []
@@ -237,32 +281,51 @@ def load_workouts():
     return workouts
 
 
-def save_workouts(workouts):
+def load_workouts():
     """
-    Save workout history to SQLite using the old list-of-dicts interface.
+    Read workout history from SQLite for the current user.
 
-    This clears and rewrites the table for now so edit/delete/undo code can keep
-    working without a large refactor.
+    The rest of the app can keep calling load_workouts() like before, even
+    though workouts.json is no longer the main workout-history store.
+    """
+    return load_workouts_for_user(get_current_user_id())
+
+
+def save_workouts_for_user(workouts, user_id):
+    """
+    Save one user's workout history to SQLite using the list-of-dicts interface.
+
+    Only rows for this user_id are replaced, so other users' data stays intact.
     """
     initialize_database()
 
-    insert_columns = list(WORKOUT_DB_COLUMNS) + ["extra_json"]
+    insert_columns = ["user_id"] + list(WORKOUT_DB_COLUMNS) + ["extra_json"]
     placeholders = ", ".join(["?"] * len(insert_columns))
     column_names = ", ".join(insert_columns)
 
     with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute("DELETE FROM workouts")
+        connection.execute("DELETE FROM workouts WHERE user_id = ?", (user_id,))
 
         for entry in workouts:
             row = prepare_workout_row(entry)
-            values = []
-            for column_name in insert_columns:
+            values = [user_id]
+            for column_name in WORKOUT_DB_COLUMNS + ["extra_json"]:
                 values.append(row[column_name])
 
             connection.execute(
                 f"INSERT INTO workouts ({column_names}) VALUES ({placeholders})",
                 values,
             )
+
+
+def save_workouts(workouts):
+    """
+    Save workout history to SQLite for the current user.
+
+    This clears and rewrites that user's rows for now so edit/delete/undo code
+    can keep working without a large refactor.
+    """
+    save_workouts_for_user(workouts, get_current_user_id())
 
 
 def create_session_id(workout_name):
