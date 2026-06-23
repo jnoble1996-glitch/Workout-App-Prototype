@@ -125,6 +125,27 @@ def save_workout_plan(workout_plan):
         json.dump(workout_plan, file, indent=2)
 
 
+def update_workout_plan_template_name(old_name, new_name):
+    """
+    Replace a renamed template name in the weekly workout plan.
+
+    Today's Workout looks up the scheduled workout by template name, so leaving
+    the old name in workout_plan.json would break weekly schedule mode.
+    """
+    workout_plan = load_workout_plan()
+    days_updated = 0
+
+    for day_name, assigned_workout in workout_plan["weekly_schedule"].items():
+        if assigned_workout == old_name:
+            workout_plan["weekly_schedule"][day_name] = new_name
+            days_updated += 1
+
+    if days_updated > 0:
+        save_workout_plan(workout_plan)
+
+    return days_updated
+
+
 def build_rotation_from_weekly_plan(weekly_schedule):
     """
     Build a rotation list from Monday through Sunday.
@@ -1976,7 +1997,22 @@ with tab_workout_templates:
                         save_templates(templates)
                         st.session_state.edit_template_source = new_name
                         st.session_state.edit_template_name = new_name
-                        st.success(f"Template '{new_name}' updated!")
+
+                        if original_name != new_name:
+                            days_updated = update_workout_plan_template_name(
+                                original_name, new_name
+                            )
+                            if days_updated > 0:
+                                st.success(
+                                    f"Template renamed from {original_name} to {new_name}. "
+                                    f"Updated {days_updated} weekly plan day(s)."
+                                )
+                            else:
+                                st.success(
+                                    "Template renamed. Weekly plan did not need updates."
+                                )
+                        else:
+                            st.success(f"Template '{new_name}' updated!")
                     else:
                         st.warning("Could not find that template to update.")
         else:
