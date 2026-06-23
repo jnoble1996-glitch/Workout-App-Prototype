@@ -1888,9 +1888,29 @@ with tab_workout_templates:
             )
 
             st.markdown("**Exercises**")
+            # Exercise order lives in session state until the user clicks Save Changes.
+            exercise_count = len(st.session_state.edit_template_exercises)
             for index, exercise in enumerate(st.session_state.edit_template_exercises):
-                exercise_col, remove_col = st.columns([4, 1])
+                exercise_col, up_col, down_col, remove_col = st.columns([4, 1, 1, 1])
                 exercise_col.write(exercise)
+
+                if up_col.button(
+                    "Move Up",
+                    key=f"move_up_edit_exercise_{selected_edit_template}_{index}_{exercise}",
+                    disabled=(index == 0),
+                ):
+                    exercises = st.session_state.edit_template_exercises
+                    exercises[index - 1], exercises[index] = exercises[index], exercises[index - 1]
+                    st.rerun()
+
+                if down_col.button(
+                    "Move Down",
+                    key=f"move_down_edit_exercise_{selected_edit_template}_{index}_{exercise}",
+                    disabled=(index == exercise_count - 1),
+                ):
+                    exercises = st.session_state.edit_template_exercises
+                    exercises[index], exercises[index + 1] = exercises[index + 1], exercises[index]
+                    st.rerun()
 
                 if remove_col.button(
                     "Remove",
