@@ -1955,76 +1955,67 @@ with tab_data:
             if not matching_indices:
                 st.info("No entries match these filters.")
             else:
-                # Step 2: show matching rows in a readable table-like layout.
-                header_col1, header_col2, header_col3, header_col4, header_col5, header_col6, header_col7, header_col8, header_col9, header_col10 = st.columns(
-                    [0.9, 1, 1, 0.5, 0.9, 0.7, 1, 0.5, 0.7, 0.8]
-                )
-                header_col1.write("**Date**")
-                header_col2.write("**Workout**")
-                header_col3.write("**Exercise**")
-                header_col4.write("**Set**")
-                header_col5.write("**Weight × Reps**")
-                header_col6.write("**e1RM**")
-                header_col7.write("**Notes**")
-                header_col8.write("**Edit**")
-                header_col9.write("**Delete Set**")
-                header_col10.write("**Delete Exercise**")
-
+                # Step 2: show matching entries as mobile-friendly cards.
                 for original_index in matching_indices:
                     entry = editable_workouts[original_index]
+                    exercise_name = entry.get("exercise", "Unknown exercise")
+                    entry_date = entry.get("date", "Unknown date")
+                    workout_name = entry.get("workout_name", "Unknown workout")
+                    set_number = entry.get("set_number", "?")
+                    weight = entry.get("weight", 0)
+                    reps = entry.get("reps", 0)
+                    estimated_1rm = entry.get("estimated_1rm", "—")
                     notes_text = entry.get("notes", "")
-                    if notes_text == "":
-                        notes_preview = "—"
-                    elif len(notes_text) > 40:
-                        notes_preview = notes_text[:40] + "..."
-                    else:
-                        notes_preview = notes_text
 
-                    row_col1, row_col2, row_col3, row_col4, row_col5, row_col6, row_col7, row_col8, row_col9, row_col10 = st.columns(
-                        [0.9, 1, 1, 0.5, 0.9, 0.7, 1, 0.5, 0.7, 0.8]
-                    )
-                    row_col1.write(entry.get("date", ""))
-                    row_col2.write(entry.get("workout_name", ""))
-                    row_col3.write(entry.get("exercise", ""))
-                    row_col4.write(str(entry.get("set_number", "?")))
-                    row_col5.write(
-                        f"{int(entry.get('weight', 0))} lbs × {entry.get('reps', 0)}"
-                    )
-                    row_col6.write(str(entry.get("estimated_1rm", "—")))
-                    row_col7.write(notes_preview)
+                    with st.container(border=True):
+                        st.markdown(f"**{exercise_name}**")
+                        st.caption(f"{workout_name} · {entry_date}")
+                        st.write(f"Set {set_number}: {int(weight)} lbs × {reps} reps")
+                        st.write(f"e1RM: {estimated_1rm} lbs")
 
-                    if row_col8.button("Edit", key=f"edit_workout_row_{original_index}"):
-                        # Store the original workouts.json index, not the filtered row position.
-                        st.session_state.edit_workout_entry_index = original_index
-                        st.session_state.delete_set_index = None
-                        st.session_state.delete_exercise_info = None
-                        st.rerun()
+                        if notes_text:
+                            if len(notes_text) > 40:
+                                st.caption(f"Notes: {notes_text[:40]}...")
+                            else:
+                                st.caption(f"Notes: {notes_text}")
 
-                    if row_col9.button("Delete Set", key=f"delete_set_row_{original_index}"):
-                        st.session_state.delete_set_index = original_index
-                        st.session_state.delete_exercise_info = None
-                        st.session_state.edit_workout_entry_index = None
-                        st.rerun()
+                        edit_col, delete_set_col, delete_exercise_col = st.columns(3)
 
-                    if row_col10.button("Delete Exercise", key=f"delete_exercise_row_{original_index}"):
-                        entry_date = entry.get("date", "Unknown date")
-                        workout_name = entry.get("workout_name", "Unknown workout")
-                        exercise_name = entry.get("exercise", "Unknown exercise")
-                        match_count = count_matching_exercise_entries(
-                            editable_workouts,
-                            entry_date,
-                            workout_name,
-                            exercise_name,
-                        )
-                        st.session_state.delete_exercise_info = {
-                            "date": entry_date,
-                            "workout_name": workout_name,
-                            "exercise": exercise_name,
-                            "match_count": match_count,
-                        }
-                        st.session_state.delete_set_index = None
-                        st.session_state.edit_workout_entry_index = None
-                        st.rerun()
+                        if edit_col.button("Edit", key=f"edit_workout_row_{original_index}"):
+                            # Store the original workouts.json index, not the filtered row position.
+                            st.session_state.edit_workout_entry_index = original_index
+                            st.session_state.delete_set_index = None
+                            st.session_state.delete_exercise_info = None
+                            st.rerun()
+
+                        if delete_set_col.button(
+                            "Delete Set",
+                            key=f"delete_set_row_{original_index}",
+                        ):
+                            st.session_state.delete_set_index = original_index
+                            st.session_state.delete_exercise_info = None
+                            st.session_state.edit_workout_entry_index = None
+                            st.rerun()
+
+                        if delete_exercise_col.button(
+                            "Delete Exercise",
+                            key=f"delete_exercise_row_{original_index}",
+                        ):
+                            match_count = count_matching_exercise_entries(
+                                editable_workouts,
+                                entry_date,
+                                workout_name,
+                                exercise_name,
+                            )
+                            st.session_state.delete_exercise_info = {
+                                "date": entry_date,
+                                "workout_name": workout_name,
+                                "exercise": exercise_name,
+                                "match_count": match_count,
+                            }
+                            st.session_state.delete_set_index = None
+                            st.session_state.edit_workout_entry_index = None
+                            st.rerun()
 
             # Step 3: confirm deleting one exact logged set.
             delete_set_index = st.session_state.delete_set_index
