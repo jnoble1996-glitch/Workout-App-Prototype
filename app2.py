@@ -1064,6 +1064,127 @@ def make_recommended_set_id(template_name, exercise_index, exercise, rank, set_n
     )
 
 
+def build_single_exercise_plan(
+    template_name,
+    exercise,
+    exercise_index,
+    workouts,
+    added_during_workout=False,
+):
+    """
+    Build one exercise entry for the active Today's Workout plan.
+
+    Used for template exercises and for exercises added during the session.
+    """
+    exercise_plan = {
+        "exercise_index": exercise_index,
+        "planned_exercise": exercise,
+        "exercise": exercise,
+        "swapped_to": None,
+        "has_history": False,
+        "recommendations": [],
+    }
+
+    if added_during_workout:
+        exercise_plan["added_during_workout"] = True
+
+    exercise_entries = get_entries_for_exercise(workouts, exercise)
+
+    if not exercise_entries:
+        return exercise_plan
+
+    best_1rm = get_best_estimated_1rm(exercise_entries)
+    targets = get_workout_targets(best_1rm, exercise_entries, count=2)
+
+    recommendations = []
+    for rank, target in enumerate(targets, start=1):
+        set_plan = build_recommended_set_plan(target)
+        sets = []
+
+        for planned_set in set_plan:
+            weight = planned_set["weight"]
+            reps = planned_set["reps"]
+            sets.append({
+                "set_number": planned_set["set_number"],
+                "target_weight": weight,
+                "target_reps": reps,
+                "estimated_1rm": planned_set["estimated_1rm"],
+                "set_id": make_recommended_set_id(
+                    template_name,
+                    exercise_index,
+                    exercise,
+                    rank,
+                    planned_set["set_number"],
+                    weight,
+                    reps,
+                ),
+            })
+
+        recommendations.append({
+            "rank": rank,
+            "projected_1rm": target["new_estimated_1rm"],
+            "improvement": target["improvement"],
+            "sets": sets,
+        })
+
+    exercise_plan["has_history"] = True
+    exercise_plan["recommendations"] = recommendations
+    return exercise_plan
+
+
+def get_session_added_exercises(active_plan):
+    """Return exercises the user added during this workout session only."""
+    if not active_plan:
+        return []
+
+    added_exercises = []
+    for exercise_plan in active_plan.get("exercises", []):
+        if exercise_plan.get("added_during_workout"):
+            added_exercises.append(exercise_plan)
+
+    return added_exercises
+
+
+def exercise_is_in_active_plan(active_plan, exercise_name):
+    """Return True if the exercise is already part of today's active workout."""
+    for exercise_plan in active_plan.get("exercises", []):
+        if get_todays_exercise_name(exercise_plan) == exercise_name:
+            return True
+
+    return False
+
+
+def add_exercise_to_active_plan(exercise_name, template_name, workouts):
+    """
+    Add one extra exercise to today's session plan only.
+
+    This never changes workout_templates.json — the add is session-only.
+    """
+    active_plan = st.session_state.active_workout_plan
+    if active_plan is None:
+        return False, "Start a workout before adding exercises."
+
+    if exercise_is_in_active_plan(active_plan, exercise_name):
+        return False, f"'{exercise_name}' is already in today's workout."
+
+    next_index = 0
+    for exercise_plan in active_plan.get("exercises", []):
+        exercise_index = exercise_plan.get("exercise_index", 0)
+        if exercise_index >= next_index:
+            next_index = exercise_index + 1
+
+    new_exercise_plan = build_single_exercise_plan(
+        template_name,
+        exercise_name,
+        next_index,
+        workouts,
+        added_during_workout=True,
+    )
+    active_plan["exercises"].append(new_exercise_plan)
+    st.session_state.todays_session_added_exercises.append(new_exercise_plan)
+    return True, f"Added {exercise_name} to today's workout."
+
+
 def build_active_workout_plan(template_name, selection_mode, templates, workouts):
     """
     Build the full recommended workout plan for Today's Workout.
@@ -1078,61 +1199,14 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
     exercise_plans = []
 
     for exercise_index, exercise in enumerate(template["exercises"]):
-        exercise_entries = get_entries_for_exercise(workouts, exercise)
-
-        if not exercise_entries:
-            exercise_plans.append({
-                "exercise_index": exercise_index,
-                "planned_exercise": exercise,
-                "exercise": exercise,
-                "swapped_to": None,
-                "has_history": False,
-                "recommendations": [],
-            })
-            continue
-
-        best_1rm = get_best_estimated_1rm(exercise_entries)
-        targets = get_workout_targets(best_1rm, exercise_entries, count=2)
-
-        recommendations = []
-        for rank, target in enumerate(targets, start=1):
-            set_plan = build_recommended_set_plan(target)
-            sets = []
-
-            for planned_set in set_plan:
-                weight = planned_set["weight"]
-                reps = planned_set["reps"]
-                sets.append({
-                    "set_number": planned_set["set_number"],
-                    "target_weight": weight,
-                    "target_reps": reps,
-                    "estimated_1rm": planned_set["estimated_1rm"],
-                    "set_id": make_recommended_set_id(
-                        template_name,
-                        exercise_index,
-                        exercise,
-                        rank,
-                        planned_set["set_number"],
-                        weight,
-                        reps,
-                    ),
-                })
-
-            recommendations.append({
-                "rank": rank,
-                "projected_1rm": target["new_estimated_1rm"],
-                "improvement": target["improvement"],
-                "sets": sets,
-            })
-
-        exercise_plans.append({
-            "exercise_index": exercise_index,
-            "planned_exercise": exercise,
-            "exercise": exercise,
-            "swapped_to": None,
-            "has_history": True,
-            "recommendations": recommendations,
-        })
+        exercise_plans.append(
+            build_single_exercise_plan(
+                template_name,
+                exercise,
+                exercise_index,
+                workouts,
+            )
+        )
 
     return {
         "template_name": template_name,
@@ -1253,9 +1327,11 @@ def render_todays_workout_manual_log(
 
     planned_exercise = exercise_name
     swapped_to = None
+    is_added_during_workout = False
     if exercise_plan:
         planned_exercise = exercise_plan.get("planned_exercise", exercise_name)
         swapped_to = exercise_plan.get("swapped_to")
+        is_added_during_workout = exercise_plan.get("added_during_workout", False)
 
     active_exercise = exercise_name
     if swapped_to:
@@ -1363,6 +1439,9 @@ def render_todays_workout_manual_log(
                 new_entry["swapped_from"] = planned_exercise
                 new_entry["swapped_to"] = swapped_to
 
+            if is_added_during_workout:
+                new_entry["added_during_workout"] = True
+
             workouts.append(new_entry)
 
         save_workouts(workouts)
@@ -1371,6 +1450,79 @@ def render_todays_workout_manual_log(
             "Baseline logged. Use Refresh recommendations next time you want "
             "this exercise to generate targets."
         )
+
+
+def get_finished_workout_summary(selected_todays_template, active_plan):
+    """
+    Build a simple summary for the current Today's Workout session.
+
+    Newer entries have session_id, so use it when available. If an older active
+    plan does not have one, fall back to today's date and workout name.
+    """
+    workouts = load_workouts()
+    today_text = str(date.today())
+    session_id = None
+    if active_plan:
+        session_id = active_plan.get("session_id")
+
+    session_entries = []
+    for entry in workouts:
+        if entry.get("logged_from") != "Today's Workout":
+            continue
+
+        if session_id:
+            if entry.get("session_id") == session_id:
+                session_entries.append(entry)
+        else:
+            if (
+                entry.get("date") == today_text
+                and entry.get("workout_name") == selected_todays_template
+            ):
+                session_entries.append(entry)
+
+    exercises = []
+    total_volume = 0
+    best_estimated_1rm = 0
+
+    for entry in session_entries:
+        exercise_name = get_entry_exercise(entry)
+        if exercise_name and exercise_name not in exercises:
+            exercises.append(exercise_name)
+
+        total_volume += get_entry_volume(entry)
+
+        entry_1rm = get_entry_estimated_1rm(entry)
+        if entry_1rm > best_estimated_1rm:
+            best_estimated_1rm = entry_1rm
+
+    return {
+        "workout_name": selected_todays_template,
+        "exercises": exercises,
+        "set_count": len(session_entries),
+        "total_volume": total_volume,
+        "best_estimated_1rm": best_estimated_1rm,
+    }
+
+
+def show_finished_workout_summary(summary):
+    """Display the finished workout summary in a phone-friendly card."""
+    with st.container(border=True):
+        st.markdown("**Workout Summary**")
+        st.write(f"Workout: {summary['workout_name']}")
+        st.write(f"Sets logged: {summary['set_count']}")
+        st.write(f"Total volume: {summary['total_volume']} lbs")
+
+        if summary["best_estimated_1rm"] > 0:
+            st.write(f"Best estimated 1RM: {summary['best_estimated_1rm']} lbs")
+        else:
+            st.write("Best estimated 1RM: No sets logged")
+
+        if summary["exercises"]:
+            st.write("Exercises logged:")
+            for exercise_name in summary["exercises"]:
+                st.write(f"- {exercise_name}")
+        else:
+            st.write("Exercises logged: No sets logged")
 
 
 # --- 1. App title ---
@@ -1409,6 +1561,9 @@ if "pending_manual_log_warnings" not in st.session_state:
 
 if "template_exercises" not in st.session_state:
     st.session_state.template_exercises = []
+
+if "todays_session_added_exercises" not in st.session_state:
+    st.session_state.todays_session_added_exercises = []
 
 tab_todays_workout, tab_manual_log, tab_exercise_history, tab_exercise_library, tab_workout_templates, tab_data = st.tabs([
     "🏋️ Today's Workout",
@@ -1543,6 +1698,7 @@ with tab_todays_workout:
             # The next active plan will get a new session_id when it is rebuilt.
             st.session_state.active_workout_plan = None
             st.session_state.completed_recommended_sets = []
+            st.session_state.todays_session_added_exercises = []
 
         # Clear stale session data from a previous day or template.
         active_plan = st.session_state.active_workout_plan
@@ -1569,6 +1725,9 @@ with tab_todays_workout:
                 todays_templates,
                 todays_workouts,
             )
+            # Keep session-only added exercises when the template plan is rebuilt.
+            for added_exercise in st.session_state.todays_session_added_exercises:
+                st.session_state.active_workout_plan["exercises"].append(added_exercise)
 
         active_plan = st.session_state.active_workout_plan
 
@@ -1583,6 +1742,41 @@ with tab_todays_workout:
             for library_exercise in swap_exercise_library:
                 swap_exercise_names.append(library_exercise["name"])
 
+            with st.expander("Add exercise today", expanded=False):
+                st.caption(
+                    "Add an extra exercise for this session only. "
+                    "This does not change your saved template."
+                )
+
+                add_exercise_library_names = []
+                for library_exercise in swap_exercise_library:
+                    add_exercise_library_names.append(library_exercise["name"])
+
+                if not add_exercise_library_names:
+                    st.info("Add exercises in Exercise Library before adding one here.")
+                else:
+                    exercise_to_add_today = st.selectbox(
+                        "Exercise to add",
+                        add_exercise_library_names,
+                        key=f"add_exercise_today_select_{selected_todays_template}",
+                    )
+
+                    if st.button(
+                        "Add to today's workout",
+                        key=f"add_exercise_today_button_{selected_todays_template}",
+                        use_container_width=True,
+                    ):
+                        added_ok, add_message = add_exercise_to_active_plan(
+                            exercise_to_add_today,
+                            selected_todays_template,
+                            todays_workouts,
+                        )
+                        if added_ok:
+                            st.success(add_message)
+                        else:
+                            st.warning(add_message)
+                        st.rerun()
+
             for exercise_plan in active_plan["exercises"]:
                 # planned_exercise = template slot; swapped_to = today's temporary replacement.
                 exercise_index = exercise_plan.get("exercise_index", 0)
@@ -1592,16 +1786,21 @@ with tab_todays_workout:
                 )
                 swapped_to = exercise_plan.get("swapped_to")
                 todays_exercise = get_todays_exercise_name(exercise_plan)
+                added_during_workout = exercise_plan.get("added_during_workout", False)
 
-                last_swap = get_last_swap_for_exercise(
-                    todays_workouts,
-                    selected_todays_template,
-                    planned_exercise,
-                )
+                last_swap = None
+                if not added_during_workout:
+                    last_swap = get_last_swap_for_exercise(
+                        todays_workouts,
+                        selected_todays_template,
+                        planned_exercise,
+                    )
 
                 with st.container(border=True):
                     st.markdown(f"### {todays_exercise}")
-                    if swapped_to:
+                    if added_during_workout:
+                        st.caption("Added during today's workout")
+                    elif swapped_to:
                         st.caption(f"Planned: {planned_exercise}")
                         st.caption(f"Active exercise: {todays_exercise}")
                     else:
@@ -1618,38 +1817,39 @@ with tab_todays_workout:
                                 f"{int(logged_set['weight'])} lbs × {logged_set['reps']}"
                             )
 
-                    with st.expander("Swap Exercise", expanded=False):
-                        swap_options = ["Use planned exercise"] + swap_exercise_names
-                        swap_index = 0
-                        if swapped_to and swapped_to in swap_options:
-                            swap_index = swap_options.index(swapped_to)
+                    if not added_during_workout:
+                        with st.expander("Swap Exercise", expanded=False):
+                            swap_options = ["Use planned exercise"] + swap_exercise_names
+                            swap_index = 0
+                            if swapped_to and swapped_to in swap_options:
+                                swap_index = swap_options.index(swapped_to)
 
-                        replacement_exercise = st.selectbox(
-                            "Replacement exercise",
-                            swap_options,
-                            index=swap_index,
-                            key=(
-                                f"swap_exercise_select_{selected_todays_template}_"
-                                f"{exercise_index}_{planned_exercise}"
-                            ),
-                        )
+                            replacement_exercise = st.selectbox(
+                                "Replacement exercise",
+                                swap_options,
+                                index=swap_index,
+                                key=(
+                                    f"swap_exercise_select_{selected_todays_template}_"
+                                    f"{exercise_index}_{planned_exercise}"
+                                ),
+                            )
 
-                        if st.button(
-                            "Apply Swap",
-                            key=(
-                                f"apply_swap_button_{selected_todays_template}_"
-                                f"{exercise_index}_{planned_exercise}"
-                            ),
-                            use_container_width=True,
-                        ):
-                            if replacement_exercise == "Use planned exercise":
-                                apply_exercise_swap_to_active_plan(exercise_index, None)
-                            else:
-                                apply_exercise_swap_to_active_plan(
-                                    exercise_index,
-                                    replacement_exercise,
-                                )
-                            st.rerun()
+                            if st.button(
+                                "Apply Swap",
+                                key=(
+                                    f"apply_swap_button_{selected_todays_template}_"
+                                    f"{exercise_index}_{planned_exercise}"
+                                ),
+                                use_container_width=True,
+                            ):
+                                if replacement_exercise == "Use planned exercise":
+                                    apply_exercise_swap_to_active_plan(exercise_index, None)
+                                else:
+                                    apply_exercise_swap_to_active_plan(
+                                        exercise_index,
+                                        replacement_exercise,
+                                    )
+                                st.rerun()
 
                     if (
                         not exercise_plan["has_history"]
@@ -1770,6 +1970,9 @@ with tab_todays_workout:
                                             new_entry["swapped_from"] = planned_exercise
                                             new_entry["swapped_to"] = swapped_to
 
+                                        if added_during_workout:
+                                            new_entry["added_during_workout"] = True
+
                                         workouts.append(new_entry)
                                         save_workouts(workouts)
                                         st.session_state.completed_recommended_sets.append(set_id)
@@ -1823,6 +2026,24 @@ with tab_todays_workout:
                         break
             else:
                 st.caption("Save a workout template first to see target options.")
+
+        st.divider()
+
+        if st.button(
+            "Finish Workout",
+            key="finish_todays_workout_button",
+            type="primary",
+            use_container_width=True,
+        ):
+            finish_summary = get_finished_workout_summary(
+                selected_todays_template,
+                active_plan,
+            )
+            show_finished_workout_summary(finish_summary)
+            st.session_state.active_workout_plan = None
+            st.session_state.completed_recommended_sets = []
+            st.session_state.todays_session_added_exercises = []
+            st.success("Workout finished.")
     else:
         st.info("Save a workout template first to use Today's Workout.")
 
