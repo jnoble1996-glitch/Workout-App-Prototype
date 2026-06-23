@@ -418,11 +418,11 @@
     "notes": ""
   },
   {
-    "date": "2026-06-20",
+    "date": "2026-06-22",
     "workout_name": "Push Day",
     "exercise": "Bench Press",
     "set_number": 3,
-    "weight": 245,
+    "weight": 245.0,
     "reps": 4,
     "estimated_1rm": 285,
     "volume": 980,

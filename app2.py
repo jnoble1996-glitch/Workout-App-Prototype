@@ -433,6 +433,94 @@ def get_suspicious_entry_warnings(weight, reps, exercise_name, workouts):
     return warnings, needs_confirmation
 
 
+def get_manual_log_warnings(logged_sets, previous_entries):
+    """
+    Return warning strings for a Manual Log submission.
+
+    Uses the submitted logged_sets values, not live widget state.
+    """
+    warnings = []
+
+    valid_previous = []
+    for entry in previous_entries:
+        if entry_has_valid_lift_data(entry):
+            valid_previous.append(entry)
+
+    best_1rm = get_best_estimated_1rm(valid_previous) if valid_previous else 0
+
+    for set_data in logged_sets:
+        set_number = set_data["set_number"]
+
+        try:
+            weight_value = float(set_data["weight"])
+            reps_value = int(set_data["reps"])
+        except (TypeError, ValueError):
+            warnings.append(f"Set {set_number} has invalid weight or reps.")
+            continue
+
+        if weight_value == 0:
+            warnings.append(
+                f"Set {set_number} has 0 lbs. Confirm if this is intentional."
+            )
+
+        if reps_value > 30:
+            warnings.append(f"Set {set_number} has unusually high reps.")
+
+        new_1rm = estimate_1rm(weight_value, reps_value)
+        if best_1rm > 0 and new_1rm > best_1rm * 1.25:
+            warnings.append(
+                f"Set {set_number} would increase your estimated 1RM by more than 25%. "
+                "Confirm the weight/reps are correct."
+            )
+
+    return warnings
+
+
+def save_manual_log_submission(submission):
+    """
+    Save one Manual Log submission to workouts.json.
+
+    Returns PR messages so both the normal and confirm-anyway paths share one save flow.
+    """
+    workouts = load_workouts()
+    today = submission["date"]
+    workout_name = submission["workout_name"]
+    exercise_name = submission["exercise_name"]
+    logged_sets = submission["logged_sets"]
+    notes = submission["notes"]
+
+    previous_entries = get_entries_for_exercise(workouts, exercise_name)
+    pr_messages = []
+
+    for set_data in logged_sets:
+        estimated_1rm = estimate_1rm(set_data["weight"], set_data["reps"])
+        set_data_for_prs = {
+            "set_number": set_data["set_number"],
+            "weight": set_data["weight"],
+            "reps": set_data["reps"],
+            "estimated_1rm": estimated_1rm,
+        }
+
+        for message in detect_prs(set_data_for_prs, previous_entries):
+            pr_messages.append(message)
+
+        new_entry = {
+            "date": today,
+            "workout_name": workout_name,
+            "exercise": exercise_name,
+            "set_number": set_data["set_number"],
+            "weight": set_data["weight"],
+            "reps": set_data["reps"],
+            "estimated_1rm": round(estimated_1rm),
+            "volume": round(set_data["weight"] * set_data["reps"]),
+            "notes": notes,
+        }
+        workouts.append(new_entry)
+
+    save_workouts(workouts)
+    return pr_messages
+
+
 def get_unique_exercises(workouts):
     """Return a sorted list of unique exercise names from all logged workouts."""
     exercise_names = []
@@ -900,6 +988,12 @@ if "last_deleted_entries" not in st.session_state:
 
 if "last_delete_description" not in st.session_state:
     st.session_state.last_delete_description = ""
+
+if "pending_manual_log_submission" not in st.session_state:
+    st.session_state.pending_manual_log_submission = None
+
+if "pending_manual_log_warnings" not in st.session_state:
+    st.session_state.pending_manual_log_warnings = []
 
 if "template_exercises" not in st.session_state:
     st.session_state.template_exercises = []
@@ -1409,63 +1503,60 @@ with tab_manual_log:
                 if notes:
                     st.write("**Notes:**", notes)
 
-            needs_manual_confirmation = False
-            for set_data in logged_sets:
-                set_warnings, set_needs_confirmation = get_suspicious_entry_warnings(
-                    set_data["weight"],
-                    set_data["reps"],
-                    exercise_name,
-                    load_workouts(),
-                )
-                for warning_message in set_warnings:
-                    st.warning(
-                        f"Set {set_data['set_number']}: {warning_message}"
-                    )
-                if set_needs_confirmation:
-                    needs_manual_confirmation = True
-
-            confirm_suspicious_manual_log = True
-            if needs_manual_confirmation:
-                confirm_suspicious_manual_log = st.checkbox(
-                    "I confirm these sets look correct",
-                    key="confirm_suspicious_manual_log",
-                )
-
             submitted = st.form_submit_button(
                 "Log Exercise",
                 type="primary",
                 use_container_width=True,
-                disabled=needs_manual_confirmation and not confirm_suspicious_manual_log,
             )
+
+        # If the last submit had warnings, ask for confirmation before saving.
+        if st.session_state.pending_manual_log_submission is not None:
+            for warning_message in st.session_state.pending_manual_log_warnings:
+                st.warning(warning_message)
+
+            confirm_col, cancel_col = st.columns(2)
+
+            if confirm_col.button("Confirm Log Anyway", key="confirm_manual_log_anyway"):
+                pending_submission = st.session_state.pending_manual_log_submission
+                num_sets = len(pending_submission["logged_sets"])
+                pr_messages = save_manual_log_submission(pending_submission)
+                st.session_state.pending_manual_log_submission = None
+                st.session_state.pending_manual_log_warnings = []
+                st.success(f"Exercise logged! {num_sets} sets saved.")
+                for message in pr_messages:
+                    st.success(message)
+                st.rerun()
+
+            if cancel_col.button("Cancel Log", key="cancel_manual_log"):
+                st.session_state.pending_manual_log_submission = None
+                st.session_state.pending_manual_log_warnings = []
+                st.rerun()
 
         if submitted:
             workouts = load_workouts()
             today = str(date.today())
             previous_entries = get_entries_for_exercise(workouts, exercise_name)
-            pr_messages = []
 
-            for set_data in logged_sets:
-                for message in detect_prs(set_data, previous_entries):
-                    pr_messages.append(message)
+            submission = {
+                "date": today,
+                "workout_name": workout_name,
+                "exercise_name": exercise_name,
+                "logged_sets": logged_sets,
+                "notes": notes,
+            }
 
-                new_entry = {
-                    "date": today,
-                    "workout_name": workout_name,
-                    "exercise": exercise_name,
-                    "set_number": set_data["set_number"],
-                    "weight": set_data["weight"],
-                    "reps": set_data["reps"],
-                    "estimated_1rm": round(set_data["estimated_1rm"]),
-                    "volume": round(set_data["volume"]),
-                    "notes": notes,
-                }
-                workouts.append(new_entry)
+            warning_messages = get_manual_log_warnings(logged_sets, previous_entries)
 
-            save_workouts(workouts)
-            st.success(f"Exercise logged! {int(num_sets)} sets saved.")
+            if warning_messages:
+                st.session_state.pending_manual_log_submission = submission
+                st.session_state.pending_manual_log_warnings = warning_messages
+                st.rerun()
+            else:
+                pr_messages = save_manual_log_submission(submission)
+                st.success(f"Exercise logged! {int(num_sets)} sets saved.")
 
-            for message in pr_messages:
-                st.success(message)
+                for message in pr_messages:
+                    st.success(message)
 
 
 # --- Tab: Exercise History ---
@@ -1717,15 +1808,27 @@ with tab_workout_templates:
     with st.expander("Create New Template"):
         st.caption("Build a reusable list of exercises for Today's Workout.")
         template_name = st.text_input("Template name", placeholder="Push Day")
-        new_exercise_name = st.text_input("Exercise to add", placeholder="Bench Press")
 
-        if st.button("Add Exercise", key="add_exercise_to_template_button"):
-            exercise = new_exercise_name.strip()
-            if exercise:
-                st.session_state.template_exercises.append(exercise)
-                st.success(f"Added {exercise} to the template.")
-            else:
-                st.warning("Enter an exercise name first.")
+        create_exercise_library = load_exercise_library()
+        create_library_exercise_names = []
+        for exercise in create_exercise_library:
+            create_library_exercise_names.append(exercise["name"])
+
+        if not create_library_exercise_names:
+            st.info("Add exercises in Exercise Library before creating templates.")
+        else:
+            new_exercise_name = st.selectbox(
+                "Exercise to add",
+                create_library_exercise_names,
+                key="create_template_exercise_select",
+            )
+
+            if st.button("Add Exercise", key="add_exercise_to_template_button"):
+                if new_exercise_name in st.session_state.template_exercises:
+                    st.warning(f"'{new_exercise_name}' is already in this template.")
+                else:
+                    st.session_state.template_exercises.append(new_exercise_name)
+                    st.success(f"Added {new_exercise_name} to the template.")
 
         if st.session_state.template_exercises:
             st.markdown("**Exercises in this template**")
