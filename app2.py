@@ -46,6 +46,36 @@ def save_workouts(workouts):
         json.dump(workouts, file, indent=2)
 
 
+def create_session_id(workout_name):
+    """
+    Create a readable unique ID for one workout session.
+
+    Each logged set is stored separately, but session_id groups sets from the
+    same workout so rotation, summaries, and deletes can treat a session as
+    one unit instead of unrelated rows.
+    """
+    today_str = str(date.today())
+    safe_name = workout_name.strip().replace(" ", "-")
+
+    cleaned_name = ""
+    for character in safe_name:
+        if character.isalnum() or character in "-_":
+            cleaned_name += character
+
+    if cleaned_name == "":
+        cleaned_name = "Workout"
+
+    time_str = datetime.now().strftime("%H%M%S")
+    return f"{today_str}_{cleaned_name}_{time_str}"
+
+
+def format_session_id_caption(session_id):
+    """Return a short session_id label for history cards."""
+    if len(session_id) <= 30:
+        return session_id
+    return session_id[:30] + "..."
+
+
 def create_workouts_backup(reason):
     """
     Save a copy of workouts.json before an edit or delete.
@@ -512,6 +542,8 @@ def save_manual_log_submission(submission):
 
     previous_entries = get_entries_for_exercise(workouts, exercise_name)
     pr_messages = []
+    # One session_id ties every set from this Manual Log submission together.
+    session_id = create_session_id(workout_name)
 
     for set_data in logged_sets:
         estimated_1rm = estimate_1rm(set_data["weight"], set_data["reps"])
@@ -535,6 +567,8 @@ def save_manual_log_submission(submission):
             "estimated_1rm": round(estimated_1rm),
             "volume": round(set_data["weight"] * set_data["reps"]),
             "notes": notes,
+            "session_id": session_id,
+            "logged_from": "Manual Log",
         }
         workouts.append(new_entry)
 
@@ -892,6 +926,7 @@ def build_active_workout_plan(template_name, selection_mode, templates, workouts
         "template_name": template_name,
         "selection_mode": selection_mode,
         "generated_date": str(date.today()),
+        "session_id": create_session_id(template_name),
         "exercises": exercise_plans,
     }
 
@@ -1145,6 +1180,7 @@ with tab_todays_workout:
 
         if new_workout_col.button("Start new workout", key="start_new_workout_button"):
             # Clear the frozen plan and completed-set tracking for a fresh session.
+            # The next active plan will get a new session_id when it is rebuilt.
             st.session_state.active_workout_plan = None
             st.session_state.completed_recommended_sets = []
 
@@ -1341,6 +1377,10 @@ with tab_todays_workout:
                                     logged_weight = int(actual_weight)
                                     logged_reps = int(actual_reps)
                                     workouts = load_workouts()
+                                    # All sets in this Today's Workout session share one session_id.
+                                    session_id = active_plan.get("session_id")
+                                    if not session_id:
+                                        session_id = create_session_id(selected_todays_template)
                                     # exercise = what was actually performed.
                                     # planned_exercise = what the template scheduled.
                                     new_entry = {
@@ -1356,6 +1396,7 @@ with tab_todays_workout:
                                         "target_weight": int(target_weight),
                                         "target_reps": int(target_reps),
                                         "target_estimated_1rm": planned_set["estimated_1rm"],
+                                        "session_id": session_id,
                                         "logged_from": "Today's Workout",
                                     }
 
@@ -2129,6 +2170,9 @@ with tab_data:
                     with st.container(border=True):
                         st.markdown(f"**{exercise_name}**")
                         st.caption(f"{workout_name} · {entry_date}")
+                        session_id = entry.get("session_id")
+                        if session_id:
+                            st.caption(f"Session: {format_session_id_caption(session_id)}")
                         st.write(f"Set {set_number}: {int(weight)} lbs × {reps} reps")
                         st.write(f"e1RM: {estimated_1rm} lbs")
 
