@@ -1,8 +1,10 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import math
 import json
 import os
 import sqlite3
+import time
 from datetime import date, datetime
 
 WORKOUTS_FILE = "workouts.json"
@@ -1450,6 +1452,193 @@ def render_todays_workout_manual_log(
             "Baseline logged. Use Refresh recommendations next time you want "
             "this exercise to generate targets."
         )
+        try_auto_start_rest_timer()
+
+
+def format_seconds(seconds):
+    """Format whole seconds as mm:ss for the rest timer display."""
+    seconds = max(0, int(seconds))
+    minutes = seconds // 60
+    secs = seconds % 60
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def start_rest_timer(duration_seconds):
+    """
+    Start the rest timer for the chosen number of seconds.
+
+    We store an end timestamp instead of sleeping because Streamlit reruns
+    the whole script on each interaction.
+    """
+    duration_seconds = int(duration_seconds)
+    if duration_seconds <= 0:
+        return
+
+    st.session_state.rest_timer_duration_seconds = duration_seconds
+    st.session_state.rest_timer_end_time = time.time() + duration_seconds
+    st.session_state.rest_timer_is_running = True
+    st.session_state.rest_timer_status_message = None
+
+
+def stop_rest_timer():
+    """Stop the rest timer without clearing the chosen duration."""
+    if st.session_state.rest_timer_is_running:
+        st.session_state.rest_timer_status_message = "Timer stopped"
+    st.session_state.rest_timer_is_running = False
+    st.session_state.rest_timer_end_time = None
+
+
+def get_rest_timer_remaining_seconds():
+    """Return how many seconds are left on the active rest timer."""
+    if not st.session_state.rest_timer_is_running:
+        return 0
+
+    end_time = st.session_state.rest_timer_end_time
+    if end_time is None:
+        return 0
+
+    remaining = end_time - time.time()
+    if remaining <= 0:
+        st.session_state.rest_timer_is_running = False
+        return 0
+
+    return remaining
+
+
+def try_auto_start_rest_timer():
+    """Start the rest timer after logging a set if auto-start is enabled."""
+    if st.session_state.get("auto_start_rest_timer", True):
+        start_rest_timer(st.session_state.rest_timer_duration_seconds)
+
+
+def render_rest_timer_section():
+    """Show rest timer controls near the top of Today's Workout."""
+    with st.container(border=True):
+        st.markdown("**Rest Timer**")
+        st.caption("Rest between sets without leaving Today's Workout.")
+
+        duration_choice = st.radio(
+            "Rest duration",
+            [
+                "60 seconds",
+                "90 seconds",
+                "120 seconds",
+                "180 seconds",
+                "Custom",
+            ],
+            key="rest_timer_duration_choice",
+        )
+
+        if duration_choice == "Custom":
+            custom_seconds = st.number_input(
+                "Custom seconds",
+                min_value=1,
+                max_value=600,
+                value=st.session_state.rest_timer_duration_seconds,
+                step=15,
+                key="rest_timer_custom_seconds",
+            )
+            selected_duration = int(custom_seconds)
+        else:
+            selected_duration = int(duration_choice.split()[0])
+
+        st.session_state.rest_timer_duration_seconds = selected_duration
+
+        st.checkbox(
+            "Auto-start rest timer after logging a set",
+            key="auto_start_rest_timer",
+        )
+
+        if st.button(
+            "Start Timer",
+            key="start_rest_timer_button",
+            use_container_width=True,
+        ):
+            start_rest_timer(st.session_state.rest_timer_duration_seconds)
+
+        if st.button(
+            "Stop Timer",
+            key="stop_rest_timer_button",
+            use_container_width=True,
+        ):
+            stop_rest_timer()
+
+        if st.button(
+            "Reset Timer",
+            key="reset_rest_timer_button",
+            use_container_width=True,
+        ):
+            stop_rest_timer()
+
+        remaining_seconds = 0
+        if st.session_state.rest_timer_is_running:
+            remaining_seconds = get_rest_timer_remaining_seconds()
+
+        if st.session_state.rest_timer_is_running and remaining_seconds > 0:
+            st.markdown(f"Rest timer: **{format_seconds(remaining_seconds)}** remaining")
+            # Rerun about once per second while counting down. No sleep loop needed.
+            st_autorefresh(interval=1000, key="rest_timer_autorefresh")
+        elif (
+            st.session_state.rest_timer_end_time is not None
+            and time.time() >= st.session_state.rest_timer_end_time
+        ):
+            st.success("Rest complete")
+        else:
+            st.caption("Rest timer: ready")
+
+
+def render_sticky_rest_timer():
+    """
+    Show a fixed bottom bar with the current rest timer status.
+
+    Display-only — controls stay in render_rest_timer_section() above.
+    CSS position: fixed keeps the bar visible while scrolling exercise cards.
+    """
+    status_text = None
+    bar_background = "#1e3a5f"
+    bar_color = "#ffffff"
+
+    if st.session_state.rest_timer_is_running:
+        remaining_seconds = get_rest_timer_remaining_seconds()
+        if remaining_seconds > 0:
+            status_text = f"Rest: {format_seconds(remaining_seconds)} remaining"
+        else:
+            status_text = "Rest complete"
+            bar_background = "#0d7377"
+    elif (
+        st.session_state.rest_timer_end_time is not None
+        and time.time() >= st.session_state.rest_timer_end_time
+    ):
+        status_text = "Rest complete"
+        bar_background = "#0d7377"
+    elif st.session_state.get("rest_timer_status_message"):
+        status_text = st.session_state.rest_timer_status_message
+        bar_background = "#4a4a4a"
+
+    if status_text is None:
+        return
+
+    st.markdown(
+        f"""
+        <div style="
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 9999;
+            padding: 10px 16px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: 700;
+            background-color: {bar_background};
+            color: {bar_color};
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.25);
+        ">
+            {status_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def get_finished_workout_summary(selected_todays_template, active_plan):
@@ -1564,6 +1753,21 @@ if "template_exercises" not in st.session_state:
 
 if "todays_session_added_exercises" not in st.session_state:
     st.session_state.todays_session_added_exercises = []
+
+if "rest_timer_duration_seconds" not in st.session_state:
+    st.session_state.rest_timer_duration_seconds = 90
+
+if "rest_timer_end_time" not in st.session_state:
+    st.session_state.rest_timer_end_time = None
+
+if "rest_timer_is_running" not in st.session_state:
+    st.session_state.rest_timer_is_running = False
+
+if "auto_start_rest_timer" not in st.session_state:
+    st.session_state.auto_start_rest_timer = True
+
+if "rest_timer_status_message" not in st.session_state:
+    st.session_state.rest_timer_status_message = None
 
 tab_todays_workout, tab_manual_log, tab_exercise_history, tab_exercise_library, tab_workout_templates, tab_data = st.tabs([
     "🏋️ Today's Workout",
@@ -1730,6 +1934,8 @@ with tab_todays_workout:
                 st.session_state.active_workout_plan["exercises"].append(added_exercise)
 
         active_plan = st.session_state.active_workout_plan
+
+        render_rest_timer_section()
 
         st.divider()
         st.markdown("**Gym Mode**")
@@ -1980,6 +2186,7 @@ with tab_todays_workout:
                                             f"Logged Set {set_number}: "
                                             f"{logged_weight} lbs × {logged_reps} reps"
                                         )
+                                        try_auto_start_rest_timer()
 
         st.divider()
 
@@ -2044,6 +2251,10 @@ with tab_todays_workout:
             st.session_state.completed_recommended_sets = []
             st.session_state.todays_session_added_exercises = []
             st.success("Workout finished.")
+
+        # Bottom spacer so the fixed rest timer bar does not cover Finish Workout.
+        st.markdown("<div style='height: 70px;'></div>", unsafe_allow_html=True)
+        render_sticky_rest_timer()
     else:
         st.info("Save a workout template first to use Today's Workout.")
 
