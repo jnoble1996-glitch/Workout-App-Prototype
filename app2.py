@@ -2,12 +2,14 @@ import streamlit as st
 import math
 import json
 import os
+import sqlite3
 from datetime import date, datetime
 
 WORKOUTS_FILE = "workouts.json"
 TEMPLATES_FILE = "workout_templates.json"
 EXERCISE_LIBRARY_FILE = "exercise_library.json"
 WORKOUT_PLAN_FILE = "workout_plan.json"
+DATABASE_FILE = "workout_app.db"
 BACKUPS_DIR = "backups"
 
 DEFAULT_WORKOUT_PLAN = {
@@ -25,25 +27,240 @@ DEFAULT_WORKOUT_PLAN = {
 }
 
 
-def load_workouts():
-    """Read all logged workouts from workouts.json."""
+WORKOUT_DB_COLUMNS = [
+    "date",
+    "workout_name",
+    "exercise",
+    "set_number",
+    "weight",
+    "reps",
+    "estimated_1rm",
+    "volume",
+    "notes",
+    "target_weight",
+    "target_reps",
+    "target_estimated_1rm",
+    "logged_from",
+    "planned_exercise",
+    "swapped_from",
+    "swapped_to",
+    "session_id",
+]
+
+TEXT_WORKOUT_DB_COLUMNS = [
+    "date",
+    "workout_name",
+    "exercise",
+    "notes",
+    "logged_from",
+    "planned_exercise",
+    "swapped_from",
+    "swapped_to",
+    "session_id",
+]
+
+
+def initialize_database():
+    """Create the local SQLite database table for workout history."""
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workouts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                workout_name TEXT,
+                exercise TEXT,
+                set_number INTEGER,
+                weight INTEGER,
+                reps INTEGER,
+                estimated_1rm INTEGER,
+                volume INTEGER,
+                notes TEXT,
+                target_weight INTEGER,
+                target_reps INTEGER,
+                target_estimated_1rm INTEGER,
+                logged_from TEXT,
+                planned_exercise TEXT,
+                swapped_from TEXT,
+                swapped_to TEXT,
+                session_id TEXT,
+                extra_json TEXT
+            )
+            """
+        )
+
+
+def get_workout_table_count():
+    """Return the number of workout rows currently stored in SQLite."""
+    initialize_database()
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        cursor = connection.execute("SELECT COUNT(*) FROM workouts")
+        return cursor.fetchone()[0]
+
+
+def backup_workouts_json_for_migration():
+    """Save a copy of workouts.json before importing it into SQLite."""
+    os.makedirs(BACKUPS_DIR, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    backup_filename = f"workouts_backup_{timestamp}_before_sqlite_migration.json"
+    backup_path = os.path.join(BACKUPS_DIR, backup_filename)
+
+    with open(WORKOUTS_FILE, "r") as source_file:
+        backup_content = source_file.read()
+
+    with open(backup_path, "w") as backup_file:
+        backup_file.write(backup_content)
+
+
+def clean_integer_value(value):
+    """Convert a stored workout value to an integer when possible."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def prepare_workout_row(entry):
+    """
+    Split one workout dictionary into known SQLite columns and extra JSON.
+
+    This keeps old/future optional fields instead of dropping them when the app
+    saves the full workout list back into SQLite.
+    """
+    row = {}
+
+    for column_name in WORKOUT_DB_COLUMNS:
+        value = entry.get(column_name)
+        if column_name in TEXT_WORKOUT_DB_COLUMNS:
+            row[column_name] = "" if value is None else str(value)
+        elif value is None or value == "":
+            row[column_name] = None
+        else:
+            row[column_name] = clean_integer_value(value)
+
+    extra_fields = {}
+    for key, value in entry.items():
+        if key not in WORKOUT_DB_COLUMNS and key not in ["id", "extra_json"]:
+            extra_fields[key] = value
+
+    row["extra_json"] = json.dumps(extra_fields) if extra_fields else ""
+    return row
+
+
+def workout_entry_from_row(row):
+    """Convert one SQLite row back into the dictionary shape the app expects."""
+    entry = {}
+
+    for column_name in WORKOUT_DB_COLUMNS:
+        value = row[column_name]
+        if value is not None and value != "":
+            entry[column_name] = value
+
+    extra_json = row["extra_json"]
+    if extra_json:
+        try:
+            extra_fields = json.loads(extra_json)
+            if isinstance(extra_fields, dict):
+                entry.update(extra_fields)
+        except json.JSONDecodeError:
+            entry["extra_json"] = extra_json
+
+    return entry
+
+
+def migrate_workouts_json_to_sqlite_if_needed():
+    """
+    Import existing workouts.json history once, only when the SQLite table is empty.
+
+    Templates, exercise library, and workout plan remain JSON files for now.
+    """
+    initialize_database()
+
+    if get_workout_table_count() > 0:
+        return
+
+    if not os.path.exists(WORKOUTS_FILE):
+        return
+
     try:
         with open(WORKOUTS_FILE, "r") as file:
             content = file.read().strip()
-            if content == "":
-                return []
-            return json.loads(content)
-    except FileNotFoundError:
-        return []
+
+        if content == "":
+            return
+
+        workout_entries = json.loads(content)
     except json.JSONDecodeError:
-        st.error(f"Could not read {WORKOUTS_FILE}. The file contains invalid JSON. Using an empty workout log.")
-        return []
+        st.warning(f"Could not migrate {WORKOUTS_FILE} because it contains invalid JSON.")
+        return
+
+    if not isinstance(workout_entries, list):
+        return
+
+    valid_entries = []
+    for entry in workout_entries:
+        if isinstance(entry, dict):
+            valid_entries.append(entry)
+
+    if not valid_entries:
+        return
+
+    try:
+        backup_workouts_json_for_migration()
+        save_workouts(valid_entries)
+        st.success(f"Migrated {len(valid_entries)} workout history entries to SQLite.")
+    except OSError as error:
+        st.warning(f"Could not back up {WORKOUTS_FILE} before migration: {error}")
+
+
+def load_workouts():
+    """
+    Read workout history from SQLite.
+
+    The rest of the app can keep calling load_workouts() like before, even
+    though workouts.json is no longer the main workout-history store.
+    """
+    initialize_database()
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.row_factory = sqlite3.Row
+        cursor = connection.execute("SELECT * FROM workouts ORDER BY id")
+        rows = cursor.fetchall()
+
+    workouts = []
+    for row in rows:
+        workouts.append(workout_entry_from_row(row))
+
+    return workouts
 
 
 def save_workouts(workouts):
-    """Write all logged workouts to workouts.json."""
-    with open(WORKOUTS_FILE, "w") as file:
-        json.dump(workouts, file, indent=2)
+    """
+    Save workout history to SQLite using the old list-of-dicts interface.
+
+    This clears and rewrites the table for now so edit/delete/undo code can keep
+    working without a large refactor.
+    """
+    initialize_database()
+
+    insert_columns = list(WORKOUT_DB_COLUMNS) + ["extra_json"]
+    placeholders = ", ".join(["?"] * len(insert_columns))
+    column_names = ", ".join(insert_columns)
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute("DELETE FROM workouts")
+
+        for entry in workouts:
+            row = prepare_workout_row(entry)
+            values = []
+            for column_name in insert_columns:
+                values.append(row[column_name])
+
+            connection.execute(
+                f"INSERT INTO workouts ({column_names}) VALUES ({placeholders})",
+                values,
+            )
 
 
 def create_session_id(workout_name):
@@ -78,19 +295,14 @@ def format_session_id_caption(session_id):
 
 def create_workouts_backup(reason):
     """
-    Save a copy of workouts.json before an edit or delete.
+    Save a JSON copy of the current SQLite workout history before an edit/delete.
 
     Backups are stored in backups/ so workout history can be recovered manually
     if something is changed or deleted by mistake.
     """
-    if not os.path.exists(WORKOUTS_FILE):
-        return True
-
     try:
         os.makedirs(BACKUPS_DIR, exist_ok=True)
-
-        with open(WORKOUTS_FILE, "r") as source_file:
-            backup_content = source_file.read()
+        backup_content = json.dumps(load_workouts(), indent=2)
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
         safe_reason = reason.replace(" ", "_")
@@ -1021,6 +1233,9 @@ def get_last_swap_for_exercise(workouts, workout_name, planned_exercise):
 
 
 # --- 1. App title ---
+initialize_database()
+migrate_workouts_json_to_sqlite_if_needed()
+
 st.title("Workout Programming App")
 
 # Session state used across tabs
