@@ -23,10 +23,11 @@ DATABASE_BACKEND = "sqlite"
 # Temporary single-user id until authentication is added.
 DEFAULT_USER_ID = "local_user"
 
-# Set ENABLE_AUTH to False for local dev without OIDC secrets configured.
-ENABLE_AUTH = True
+# Set ENABLE_AUTH to True when you are ready to use Streamlit OIDC login.
+# False = single-user local app using DEFAULT_USER_ID (no secrets.toml required).
+ENABLE_AUTH = False
 
-# Development only — set to False before production deploy.
+# Development only — set to True to test multiple user ids without OIDC.
 ENABLE_LOCAL_USER_SWITCHER = False
 
 DEFAULT_WORKOUT_PLAN = {
@@ -129,8 +130,11 @@ def safe_user_is_logged_in():
     Return True only when Streamlit OIDC auth is active and the user is logged in.
 
     Safe to call even when auth is not configured in secrets.toml — returns False
-    instead of raising AttributeError.
+    instead of raising AttributeError. When ENABLE_AUTH is False, never touches st.user.
     """
+    if not ENABLE_AUTH:
+        return False
+
     try:
         return bool(getattr(st.user, "is_logged_in", False))
     except Exception:
@@ -142,7 +146,11 @@ def get_logged_in_user_id():
     Return the stable user id from Streamlit auth when logged in.
 
     Prefer email, then sub, then DEFAULT_USER_ID. Never crashes if attributes are missing.
+    When ENABLE_AUTH is False, returns DEFAULT_USER_ID without touching st.user.
     """
+    if not ENABLE_AUTH:
+        return DEFAULT_USER_ID
+
     if not safe_user_is_logged_in():
         return DEFAULT_USER_ID
 
