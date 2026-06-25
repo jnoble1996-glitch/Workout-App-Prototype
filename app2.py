@@ -124,26 +124,43 @@ def is_auth_configured():
         return False
 
 
-def get_authenticated_user_id():
+def safe_user_is_logged_in():
     """
-    Return the stable user id from Streamlit auth.
+    Return True only when Streamlit OIDC auth is active and the user is logged in.
 
-    st.login() handles authentication. This id is used to filter app data ownership.
+    Safe to call even when auth is not configured in secrets.toml — returns False
+    instead of raising AttributeError.
     """
-    if getattr(st.user, "email", None):
-        return st.user.email
-    if getattr(st.user, "sub", None):
-        return st.user.sub
+    try:
+        return bool(getattr(st.user, "is_logged_in", False))
+    except Exception:
+        return False
+
+
+def get_logged_in_user_id():
+    """
+    Return the stable user id from Streamlit auth when logged in.
+
+    Prefer email, then sub, then DEFAULT_USER_ID. Never crashes if attributes are missing.
+    """
+    if not safe_user_is_logged_in():
+        return DEFAULT_USER_ID
+
+    email = getattr(st.user, "email", None)
+    if email:
+        return email
+
+    sub = getattr(st.user, "sub", None)
+    if sub:
+        return sub
+
     return DEFAULT_USER_ID
 
 
 def get_logged_in_display_name():
     """Return a friendly label for the current user near the top of the app."""
-    if ENABLE_AUTH and is_auth_configured() and st.user.is_logged_in:
-        if getattr(st.user, "email", None):
-            return st.user.email
-        if getattr(st.user, "sub", None):
-            return st.user.sub
+    if ENABLE_AUTH and safe_user_is_logged_in():
+        return get_logged_in_user_id()
     return get_current_user_id()
 
 
@@ -151,12 +168,11 @@ def get_current_user_id():
     """
     Return the active user id for user-scoped app data.
 
-    When auth is enabled, logged-in users get their own data. The dev switcher is
-    only used when auth is disabled locally.
+    Priority: real login (email or sub) → dev switcher → DEFAULT_USER_ID.
+    st.login() proves identity; user_id filtering controls data ownership.
     """
-    if ENABLE_AUTH and is_auth_configured() and st.user.is_logged_in:
-        # st.login() proves identity; user_id filtering controls data ownership.
-        return get_authenticated_user_id()
+    if ENABLE_AUTH and safe_user_is_logged_in():
+        return get_logged_in_user_id()
 
     if ENABLE_LOCAL_USER_SWITCHER:
         # Development only — do not ship this to production.
@@ -191,15 +207,19 @@ def require_login():
         st.warning("Auth is enabled but not configured. Using local_user.")
         return
 
-    if not st.user.is_logged_in:
+    if not safe_user_is_logged_in():
         st.title("Workout Programming App")
         st.write("Log in to use your workout app.")
         if st.button("Log in", key="login_button"):
             st.login()
         st.stop()
 
-    if st.button("Log out", key="logout_button"):
-        st.logout()
+    user_label_col, logout_col = st.columns([5, 1])
+    with user_label_col:
+        st.caption(f"Logged in as **{get_logged_in_display_name()}**")
+    with logout_col:
+        if st.button("Log out", key="logout_button"):
+            st.logout()
 
 
 # =============================================================================
@@ -2809,7 +2829,8 @@ migrate_workout_templates_json_to_sqlite_if_needed()
 migrate_workout_plan_json_to_sqlite_if_needed()
 
 st.title("Workout Programming App")
-st.caption(f"Current user: **{get_logged_in_display_name()}**")
+if not (ENABLE_AUTH and is_auth_configured() and safe_user_is_logged_in()):
+    st.caption(f"Current user: **{get_logged_in_display_name()}**")
 
 render_onboarding_card(current_user_id)
 
