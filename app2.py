@@ -17,6 +17,12 @@ BACKUPS_DIR = "backups"
 # Temporary single-user id until authentication is added.
 DEFAULT_USER_ID = "local_user"
 
+# Set ENABLE_AUTH to False for local dev without OIDC secrets configured.
+ENABLE_AUTH = True
+
+# Development only — set to False before production deploy.
+ENABLE_LOCAL_USER_SWITCHER = False
+
 DEFAULT_WORKOUT_PLAN = {
     "plan_name": "Current Program",
     "schedule_mode": "weekly",
@@ -65,13 +71,115 @@ TEXT_WORKOUT_DB_COLUMNS = [
 ]
 
 
+def is_auth_configured():
+    """
+    Return True when Streamlit OIDC auth secrets are present.
+
+    This check is safe for local development where secrets.toml may be missing.
+    """
+    try:
+        if "auth" not in st.secrets:
+            return False
+
+        auth_settings = st.secrets["auth"]
+        redirect_uri = auth_settings.get("redirect_uri", "")
+        cookie_secret = auth_settings.get("cookie_secret", "")
+
+        if not redirect_uri or not cookie_secret:
+            return False
+
+        # Named provider sections look like [auth.google], [auth.microsoft], etc.
+        provider_keys = {"redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url"}
+        for key, value in dict(auth_settings).items():
+            if key not in provider_keys and isinstance(value, dict):
+                if value.get("client_id") and value.get("server_metadata_url"):
+                    return True
+
+        # Single-provider config can also live directly under [auth].
+        if auth_settings.get("client_id") and auth_settings.get("server_metadata_url"):
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def get_authenticated_user_id():
+    """
+    Return the stable user id from Streamlit auth.
+
+    st.login() handles authentication. This id is used to filter app data ownership.
+    """
+    if getattr(st.user, "email", None):
+        return st.user.email
+    if getattr(st.user, "sub", None):
+        return st.user.sub
+    return DEFAULT_USER_ID
+
+
+def get_logged_in_display_name():
+    """Return a friendly label for the current user near the top of the app."""
+    if ENABLE_AUTH and is_auth_configured() and st.user.is_logged_in:
+        if getattr(st.user, "email", None):
+            return st.user.email
+        if getattr(st.user, "sub", None):
+            return st.user.sub
+    return get_current_user_id()
+
+
 def get_current_user_id():
     """
-    Return the active user id for workout history.
+    Return the active user id for user-scoped app data.
 
-    Hardcoded to local_user for now. Later, auth can return the logged-in user.
+    When auth is enabled, logged-in users get their own data. The dev switcher is
+    only used when auth is disabled locally.
     """
+    if ENABLE_AUTH and is_auth_configured() and st.user.is_logged_in:
+        # st.login() proves identity; user_id filtering controls data ownership.
+        return get_authenticated_user_id()
+
+    if ENABLE_LOCAL_USER_SWITCHER:
+        # Development only — do not ship this to production.
+        return st.session_state.get("dev_user_id", DEFAULT_USER_ID)
+
     return DEFAULT_USER_ID
+
+
+def clear_user_specific_session_state():
+    """Clear in-memory workout UI state when the active user changes."""
+    st.session_state.active_workout_plan = None
+    st.session_state.completed_recommended_sets = []
+    st.session_state.todays_session_added_exercises = []
+    st.session_state.pending_manual_log_submission = None
+    st.session_state.pending_manual_log_warnings = []
+    st.session_state.edit_workout_entry_index = None
+    st.session_state.delete_set_index = None
+    st.session_state.delete_exercise_info = None
+
+
+def require_login():
+    """
+    Gate the app behind Streamlit OIDC login when auth is enabled.
+
+    If auth secrets are missing locally, fall back to DEFAULT_USER_ID instead of
+    blocking development.
+    """
+    if not ENABLE_AUTH:
+        return
+
+    if not is_auth_configured():
+        st.warning("Auth is enabled but not configured. Using local_user.")
+        return
+
+    if not st.user.is_logged_in:
+        st.title("Workout Programming App")
+        st.write("Log in to use your workout app.")
+        if st.button("Log in", key="login_button"):
+            st.login()
+        st.stop()
+
+    if st.button("Log out", key="logout_button"):
+        st.logout()
 
 
 def _ensure_workouts_user_id_column(connection):
@@ -93,7 +201,7 @@ def _ensure_workouts_user_id_column(connection):
 
 
 def initialize_database():
-    """Create the local SQLite database table for workout history."""
+    """Create local SQLite tables for user-scoped workout and exercise data."""
     with sqlite3.connect(DATABASE_FILE) as connection:
         connection.execute(
             """
@@ -125,6 +233,84 @@ def initialize_database():
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_workouts_user_id ON workouts (user_id)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exercise_library (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT,
+                primary_muscle TEXT,
+                default_sets INTEGER,
+                rep_min INTEGER,
+                rep_max INTEGER,
+                weight_increment INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_exercise_library_user_name
+            ON exercise_library (user_id, name)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workout_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                template_name TEXT NOT NULL,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workout_template_exercises (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                exercise_name TEXT NOT NULL,
+                position INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_workout_templates_user_name
+            ON workout_templates (user_id, template_name)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workout_plans (
+                user_id TEXT PRIMARY KEY,
+                plan_name TEXT,
+                schedule_mode TEXT,
+                monday TEXT,
+                tuesday TEXT,
+                wednesday TEXT,
+                thursday TEXT,
+                friday TEXT,
+                saturday TEXT,
+                sunday TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+
+
+WEEKDAY_NAMES = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
 
 
 def get_workout_table_count(user_id=None):
@@ -383,63 +569,336 @@ def create_workouts_backup(reason):
         return False
 
 
+def load_templates_for_user(user_id):
+    """
+    Read one user's workout templates from SQLite.
+
+    Returns the same list-of-dicts shape the app used with workout_templates.json.
+    Template ownership is controlled by user_id for future login support.
+    """
+    initialize_database()
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.row_factory = sqlite3.Row
+        template_rows = connection.execute(
+            """
+            SELECT id, template_name
+            FROM workout_templates
+            WHERE user_id = ?
+            ORDER BY template_name
+            """,
+            (user_id,),
+        ).fetchall()
+
+        templates = []
+        for template_row in template_rows:
+            exercise_rows = connection.execute(
+                """
+                SELECT exercise_name
+                FROM workout_template_exercises
+                WHERE template_id = ?
+                ORDER BY position
+                """,
+                (template_row["id"],),
+            ).fetchall()
+
+            exercises = []
+            for exercise_row in exercise_rows:
+                exercises.append(exercise_row["exercise_name"])
+
+            templates.append({
+                "template_name": template_row["template_name"],
+                "exercises": exercises,
+            })
+
+    return templates
+
+
 def load_templates():
-    """Read all saved workout templates from workout_templates.json."""
-    try:
-        with open(TEMPLATES_FILE, "r") as file:
-            content = file.read().strip()
-            if content == "":
-                return []
-            return json.loads(content)
-    except FileNotFoundError:
-        return []
-    except json.JSONDecodeError:
-        st.error(
-            f"Could not read {TEMPLATES_FILE}. The file contains invalid JSON. Using no saved templates."
+    """Read the current user's workout templates from SQLite."""
+    return load_templates_for_user(get_current_user_id())
+
+
+def get_workout_templates_table_count(user_id):
+    """Return how many templates one user has stored in SQLite."""
+    initialize_database()
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        cursor = connection.execute(
+            "SELECT COUNT(*) FROM workout_templates WHERE user_id = ?",
+            (user_id,),
         )
-        return []
+        return cursor.fetchone()[0]
+
+
+def save_templates_for_user(templates, user_id):
+    """
+    Save one user's workout templates to SQLite.
+
+    Only this user's templates and related exercise rows are replaced.
+    """
+    initialize_database()
+    timestamp = datetime.now().isoformat(timespec="seconds")
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        template_ids = connection.execute(
+            "SELECT id FROM workout_templates WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+
+        for template_row in template_ids:
+            connection.execute(
+                "DELETE FROM workout_template_exercises WHERE template_id = ?",
+                (template_row[0],),
+            )
+
+        connection.execute(
+            "DELETE FROM workout_templates WHERE user_id = ?",
+            (user_id,),
+        )
+
+        for template in templates:
+            template_name = template.get("template_name", "").strip()
+            if not template_name:
+                continue
+
+            cursor = connection.execute(
+                """
+                INSERT INTO workout_templates (
+                    user_id,
+                    template_name,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (user_id, template_name, timestamp, timestamp),
+            )
+            template_id = cursor.lastrowid
+
+            for position, exercise_name in enumerate(template.get("exercises", [])):
+                exercise_name = str(exercise_name).strip()
+                if not exercise_name:
+                    continue
+
+                connection.execute(
+                    """
+                    INSERT INTO workout_template_exercises (
+                        template_id,
+                        exercise_name,
+                        position
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (template_id, exercise_name, position),
+                )
 
 
 def save_templates(templates):
-    """Write all workout templates to workout_templates.json."""
-    with open(TEMPLATES_FILE, "w") as file:
-        json.dump(templates, file, indent=2)
+    """Save the current user's workout templates to SQLite."""
+    save_templates_for_user(templates, get_current_user_id())
+
+
+def migrate_workout_templates_json_to_sqlite_if_needed():
+    """
+    Import workout_templates.json once for the current user when SQLite is empty.
+
+    The JSON file is kept on disk as a backup/reference. Exercise order is stored
+    in the position column.
+    """
+    initialize_database()
+
+    user_id = get_current_user_id()
+    if get_workout_templates_table_count(user_id) > 0:
+        return
+
+    if not os.path.exists(TEMPLATES_FILE):
+        return
+
+    try:
+        with open(TEMPLATES_FILE, "r") as file:
+            content = file.read().strip()
+
+        if content == "":
+            return
+
+        template_entries = json.loads(content)
+    except json.JSONDecodeError:
+        st.warning(
+            f"Could not migrate {TEMPLATES_FILE} because it contains invalid JSON."
+        )
+        return
+
+    if not isinstance(template_entries, list):
+        return
+
+    valid_entries = []
+    for entry in template_entries:
+        if isinstance(entry, dict) and entry.get("template_name", "").strip():
+            valid_entries.append(entry)
+
+    if not valid_entries:
+        return
+
+    save_templates_for_user(valid_entries, user_id)
+    st.success(
+        f"Migrated {len(valid_entries)} workout templates to SQLite for {user_id}."
+    )
+
+
+def load_workout_plan_for_user(user_id):
+    """
+    Read one user's weekly workout plan from SQLite.
+
+    Returns the same dictionary shape the app used with workout_plan.json.
+    Plan ownership is controlled by user_id for future login support.
+    """
+    initialize_database()
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM workout_plans WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+    if row is None:
+        return dict(DEFAULT_WORKOUT_PLAN)
+
+    weekly_schedule = {}
+    for day_name in WEEKDAY_NAMES:
+        column_name = day_name.lower()
+        weekly_schedule[day_name] = row[column_name] or ""
+
+    plan = {
+        "plan_name": row["plan_name"] or DEFAULT_WORKOUT_PLAN["plan_name"],
+        "schedule_mode": row["schedule_mode"] or "weekly",
+        "weekly_schedule": weekly_schedule,
+    }
+    return plan
 
 
 def load_workout_plan():
-    """Read the weekly workout plan from workout_plan.json."""
-    try:
-        with open(WORKOUT_PLAN_FILE, "r") as file:
-            content = file.read().strip()
-            if content == "":
-                return dict(DEFAULT_WORKOUT_PLAN)
-            plan = json.loads(content)
-            if "schedule_mode" not in plan:
-                plan["schedule_mode"] = "weekly"
-            return plan
-    except FileNotFoundError:
-        return dict(DEFAULT_WORKOUT_PLAN)
-    except json.JSONDecodeError:
-        st.error(
-            f"Could not read {WORKOUT_PLAN_FILE}. The file contains invalid JSON. Using the default plan."
+    """Read the current user's weekly workout plan from SQLite."""
+    return load_workout_plan_for_user(get_current_user_id())
+
+
+def user_has_workout_plan(user_id):
+    """Return True if this user already has a plan row in SQLite."""
+    initialize_database()
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        cursor = connection.execute(
+            "SELECT 1 FROM workout_plans WHERE user_id = ? LIMIT 1",
+            (user_id,),
         )
-        return dict(DEFAULT_WORKOUT_PLAN)
+        return cursor.fetchone() is not None
+
+
+def save_workout_plan_for_user(workout_plan, user_id):
+    """Save one user's weekly workout plan to SQLite."""
+    initialize_database()
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    weekly_schedule = workout_plan.get("weekly_schedule", {})
+
+    day_values = []
+    for day_name in WEEKDAY_NAMES:
+        day_values.append(weekly_schedule.get(day_name, ""))
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            INSERT INTO workout_plans (
+                user_id,
+                plan_name,
+                schedule_mode,
+                monday,
+                tuesday,
+                wednesday,
+                thursday,
+                friday,
+                saturday,
+                sunday,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                plan_name = excluded.plan_name,
+                schedule_mode = excluded.schedule_mode,
+                monday = excluded.monday,
+                tuesday = excluded.tuesday,
+                wednesday = excluded.wednesday,
+                thursday = excluded.thursday,
+                friday = excluded.friday,
+                saturday = excluded.saturday,
+                sunday = excluded.sunday,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                workout_plan.get("plan_name", DEFAULT_WORKOUT_PLAN["plan_name"]),
+                workout_plan.get("schedule_mode", "weekly"),
+                day_values[0],
+                day_values[1],
+                day_values[2],
+                day_values[3],
+                day_values[4],
+                day_values[5],
+                day_values[6],
+                timestamp,
+            ),
+        )
 
 
 def save_workout_plan(workout_plan):
-    """Write the weekly workout plan to workout_plan.json."""
-    with open(WORKOUT_PLAN_FILE, "w") as file:
-        json.dump(workout_plan, file, indent=2)
+    """Save the current user's weekly workout plan to SQLite."""
+    save_workout_plan_for_user(workout_plan, get_current_user_id())
+
+
+def migrate_workout_plan_json_to_sqlite_if_needed():
+    """
+    Import workout_plan.json once for the current user when SQLite has no plan.
+
+    The JSON file is kept on disk as a backup/reference. If no valid plan exists,
+    the default empty weekly plan is created for the current user.
+    """
+    initialize_database()
+
+    user_id = get_current_user_id()
+    if user_has_workout_plan(user_id):
+        return
+
+    plan_to_save = dict(DEFAULT_WORKOUT_PLAN)
+
+    if os.path.exists(WORKOUT_PLAN_FILE):
+        try:
+            with open(WORKOUT_PLAN_FILE, "r") as file:
+                content = file.read().strip()
+
+            if content != "":
+                imported_plan = json.loads(content)
+                if isinstance(imported_plan, dict) and "weekly_schedule" in imported_plan:
+                    plan_to_save = imported_plan
+                    if "schedule_mode" not in plan_to_save:
+                        plan_to_save["schedule_mode"] = "weekly"
+                    if "plan_name" not in plan_to_save:
+                        plan_to_save["plan_name"] = DEFAULT_WORKOUT_PLAN["plan_name"]
+        except json.JSONDecodeError:
+            st.warning(
+                f"Could not migrate {WORKOUT_PLAN_FILE} because it contains invalid JSON. "
+                "Using the default workout plan."
+            )
+
+    save_workout_plan_for_user(plan_to_save, user_id)
+
+    if plan_to_save != DEFAULT_WORKOUT_PLAN:
+        st.success(f"Migrated workout plan to SQLite for {user_id}.")
 
 
 def update_workout_plan_template_name(old_name, new_name):
     """
-    Replace a renamed template name in the weekly workout plan.
+    Replace a renamed template name in the current user's weekly workout plan.
 
     Today's Workout looks up the scheduled workout by template name, so leaving
-    the old name in workout_plan.json would break weekly schedule mode.
+    the old name in the plan would break weekly schedule mode.
     """
-    workout_plan = load_workout_plan()
+    user_id = get_current_user_id()
+    workout_plan = load_workout_plan_for_user(user_id)
     days_updated = 0
 
     for day_name, assigned_workout in workout_plan["weekly_schedule"].items():
@@ -448,7 +907,7 @@ def update_workout_plan_template_name(old_name, new_name):
             days_updated += 1
 
     if days_updated > 0:
-        save_workout_plan(workout_plan)
+        save_workout_plan_for_user(workout_plan, user_id)
 
     return days_updated
 
@@ -630,28 +1089,153 @@ def get_planned_workout_for_today(workout_plan, workouts, template_names):
     return workout_plan["weekly_schedule"].get(get_today_weekday(), "")
 
 
-def load_exercise_library():
-    """Read all exercises from exercise_library.json."""
-    try:
-        with open(EXERCISE_LIBRARY_FILE, "r") as file:
-            content = file.read().strip()
-            if content == "":
-                return []
-            return json.loads(content)
-    except FileNotFoundError:
-        return []
-    except json.JSONDecodeError:
-        st.error(
-            f"Could not read {EXERCISE_LIBRARY_FILE}. "
-            "The file contains invalid JSON. Using an empty exercise library."
+def load_exercise_library_for_user(user_id):
+    """
+    Read one user's exercise library from SQLite.
+
+    Returns the same list-of-dicts shape the app used with exercise_library.json.
+    """
+    initialize_database()
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.row_factory = sqlite3.Row
+        cursor = connection.execute(
+            """
+            SELECT name, category, primary_muscle, default_sets, rep_min, rep_max,
+                   weight_increment
+            FROM exercise_library
+            WHERE user_id = ?
+            ORDER BY name
+            """,
+            (user_id,),
         )
-        return []
+        rows = cursor.fetchall()
+
+    exercise_library = []
+    for row in rows:
+        exercise_library.append({
+            "name": row["name"],
+            "category": row["category"] or "",
+            "primary_muscle": row["primary_muscle"] or "",
+            "default_sets": int(row["default_sets"] or 3),
+            "rep_min": int(row["rep_min"] or 8),
+            "rep_max": int(row["rep_max"] or 12),
+            "weight_increment": int(row["weight_increment"] or 5),
+        })
+
+    return exercise_library
+
+
+def load_exercise_library():
+    """Read the current user's exercise library from SQLite."""
+    return load_exercise_library_for_user(get_current_user_id())
+
+
+def get_exercise_library_table_count(user_id):
+    """Return how many exercises one user has stored in SQLite."""
+    initialize_database()
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        cursor = connection.execute(
+            "SELECT COUNT(*) FROM exercise_library WHERE user_id = ?",
+            (user_id,),
+        )
+        return cursor.fetchone()[0]
+
+
+def save_exercise_library_for_user(exercise_library, user_id):
+    """
+    Save one user's exercise library to SQLite.
+
+    Only rows for this user_id are replaced so other users' exercises stay safe.
+    """
+    initialize_database()
+    timestamp = datetime.now().isoformat(timespec="seconds")
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            "DELETE FROM exercise_library WHERE user_id = ?",
+            (user_id,),
+        )
+
+        for exercise in exercise_library:
+            connection.execute(
+                """
+                INSERT INTO exercise_library (
+                    user_id,
+                    name,
+                    category,
+                    primary_muscle,
+                    default_sets,
+                    rep_min,
+                    rep_max,
+                    weight_increment,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    exercise.get("name", "").strip(),
+                    exercise.get("category", ""),
+                    exercise.get("primary_muscle", ""),
+                    clean_integer_value(exercise.get("default_sets", 3)),
+                    clean_integer_value(exercise.get("rep_min", 8)),
+                    clean_integer_value(exercise.get("rep_max", 12)),
+                    clean_integer_value(exercise.get("weight_increment", 5)),
+                    timestamp,
+                    timestamp,
+                ),
+            )
 
 
 def save_exercise_library(exercise_library):
-    """Write all exercises to exercise_library.json."""
-    with open(EXERCISE_LIBRARY_FILE, "w") as file:
-        json.dump(exercise_library, file, indent=2)
+    """Save the current user's exercise library to SQLite."""
+    save_exercise_library_for_user(exercise_library, get_current_user_id())
+
+
+def migrate_exercise_library_json_to_sqlite_if_needed():
+    """
+    Import exercise_library.json once for the current user when SQLite is empty.
+
+    The JSON file is kept on disk as a backup/reference. This prepares the app
+    for future login without changing the UI yet.
+    """
+    initialize_database()
+
+    user_id = get_current_user_id()
+    if get_exercise_library_table_count(user_id) > 0:
+        return
+
+    if not os.path.exists(EXERCISE_LIBRARY_FILE):
+        return
+
+    try:
+        with open(EXERCISE_LIBRARY_FILE, "r") as file:
+            content = file.read().strip()
+
+        if content == "":
+            return
+
+        exercise_entries = json.loads(content)
+    except json.JSONDecodeError:
+        st.warning(
+            f"Could not migrate {EXERCISE_LIBRARY_FILE} because it contains invalid JSON."
+        )
+        return
+
+    if not isinstance(exercise_entries, list):
+        return
+
+    valid_entries = []
+    for entry in exercise_entries:
+        if isinstance(entry, dict) and entry.get("name", "").strip():
+            valid_entries.append(entry)
+
+    if not valid_entries:
+        return
+
+    save_exercise_library_for_user(valid_entries, user_id)
+    st.success(f"Migrated {len(valid_entries)} exercises to SQLite for {user_id}.")
 
 
 def get_exercise_by_name(exercise_library, exercise_name):
@@ -1779,11 +2363,14 @@ def show_finished_workout_summary(summary):
 
 # --- 1. App title ---
 initialize_database()
-migrate_workouts_json_to_sqlite_if_needed()
-
-st.title("Workout Programming App")
 
 # Session state used across tabs
+if "dev_user_id" not in st.session_state:
+    st.session_state.dev_user_id = DEFAULT_USER_ID
+
+if "authenticated_user_id" not in st.session_state:
+    st.session_state.authenticated_user_id = None
+
 if "completed_recommended_sets" not in st.session_state:
     st.session_state.completed_recommended_sets = []
 
@@ -1831,6 +2418,40 @@ if "auto_start_rest_timer" not in st.session_state:
 
 if "rest_timer_status_message" not in st.session_state:
     st.session_state.rest_timer_status_message = None
+
+require_login()
+
+current_user_id = get_current_user_id()
+if st.session_state.authenticated_user_id != current_user_id:
+    if st.session_state.authenticated_user_id is not None:
+        clear_user_specific_session_state()
+    st.session_state.authenticated_user_id = current_user_id
+
+migrate_workouts_json_to_sqlite_if_needed()
+migrate_exercise_library_json_to_sqlite_if_needed()
+migrate_workout_templates_json_to_sqlite_if_needed()
+migrate_workout_plan_json_to_sqlite_if_needed()
+
+st.title("Workout Programming App")
+st.caption(f"Current user: **{get_logged_in_display_name()}**")
+
+if ENABLE_LOCAL_USER_SWITCHER:
+    with st.expander("Developer user switcher", expanded=False):
+        st.caption(
+            "Development only. Switch user ids to test isolated workout data in SQLite."
+        )
+        dev_user_input = st.text_input(
+            "User id",
+            value=st.session_state.dev_user_id,
+            key="dev_user_id_input",
+        )
+
+        if st.button("Switch user", key="switch_dev_user_button"):
+            new_user_id = dev_user_input.strip()
+            if new_user_id:
+                st.session_state.dev_user_id = new_user_id
+                clear_user_specific_session_state()
+                st.rerun()
 
 tab_todays_workout, tab_manual_log, tab_exercise_history, tab_exercise_library, tab_workout_templates, tab_data = st.tabs([
     "🏋️ Today's Workout",
