@@ -3343,61 +3343,70 @@ with tab_workout:
                 template_label = "Workout template"
                 template_help = "Auto-selected from your plan. Change this anytime to override."
 
-            st.selectbox(
+            # --- Widget state vs app state (intentionally separated) ---
+            # Streamlit rule: you must NOT assign st.session_state[widget_key]
+            # after the widget with that key has been created. Doing so raises
+            # StreamlitAPIException. So we keep the app-controlled "desired"
+            # template in a SEPARATE key (todays_workout_template_value) and feed
+            # it into the selectbox via index=. The selectbox uses its own widget
+            # key (todays_workout_template_widget) that we never mutate by hand.
+
+            # Initialize the app-controlled value once.
+            if "todays_workout_template_value" not in st.session_state:
+                if recommended_template in todays_template_names:
+                    st.session_state.todays_workout_template_value = recommended_template
+                else:
+                    st.session_state.todays_workout_template_value = todays_template_names[0]
+
+            # Detect a mode change BEFORE rendering the selectbox so we can update
+            # the desired default and safely reset the workout session. We never
+            # touch the selectbox widget key here — only our own app-state key.
+            if st.session_state.get("last_workout_selection_mode") != selection_mode:
+                st.session_state.last_workout_selection_mode = selection_mode
+                # Mode change resets the in-progress workout session.
+                st.session_state.active_workout_plan = None
+                st.session_state.completed_recommended_sets = []
+                st.session_state.todays_session_added_exercises = []
+                if mode_key in ("weekly", "rotation") and recommended_template:
+                    st.session_state.todays_workout_template_value = recommended_template
+
+            # Weekly mode: auto-select today's scheduled workout once per calendar day.
+            if mode_key == "weekly":
+                if st.session_state.get("workout_plan_date") != today_key:
+                    st.session_state.workout_plan_date = today_key
+                    if recommended_template:
+                        st.session_state.todays_workout_template_value = recommended_template
+
+            # Rotation mode: auto-select when the next recommended workout changes.
+            if mode_key == "rotation":
+                rotation_list = build_rotation_from_weekly_plan(workout_plan["weekly_schedule"])
+                last_workout = get_most_recent_logged_workout_name(todays_workouts)
+                next_in_rotation = get_next_rotation_workout(rotation_list, last_workout)
+                rotation_key = f"{last_workout}::{next_in_rotation}"
+
+                if st.session_state.get("rotation_plan_key") != rotation_key:
+                    st.session_state.rotation_plan_key = rotation_key
+                    if recommended_template:
+                        st.session_state.todays_workout_template_value = recommended_template
+
+            # Compute the selectbox index from the app-controlled value, then render.
+            desired_template = st.session_state.todays_workout_template_value
+            if desired_template not in todays_template_names:
+                desired_template = todays_template_names[0]
+            default_index = todays_template_names.index(desired_template)
+
+            selected_todays_template = st.selectbox(
                 template_label,
                 todays_template_names,
-                key="todays_workout_template",
+                index=default_index,
+                key="todays_workout_template_widget",
                 help=template_help,
             )
 
-        selection_mode = st.session_state.get(
-            "workout_selection_mode", "Weekly Schedule Mode"
-        )
-        if selection_mode == "Weekly Schedule Mode":
-            mode_key = "weekly"
-        elif selection_mode == "Rotation Mode":
-            mode_key = "rotation"
-        else:
-            mode_key = "manual"
-
-        recommended_template = get_default_template_for_mode(
-            mode_key,
-            workout_plan,
-            todays_workouts,
-            todays_templates,
-        )
-        selected_todays_template = st.session_state.get(
-            "todays_workout_template", todays_template_names[0]
-        )
-
-        # Weekly mode: auto-select once per calendar day
-        if mode_key == "weekly":
-            if st.session_state.get("workout_plan_date") != today_key:
-                st.session_state.workout_plan_date = today_key
-                if recommended_template:
-                    st.session_state.todays_workout_template = recommended_template
-
-        # Rotation mode: auto-select when the rotation recommendation changes
-        if mode_key == "rotation":
-            rotation_list = build_rotation_from_weekly_plan(workout_plan["weekly_schedule"])
-            last_workout = get_most_recent_logged_workout_name(todays_workouts)
-            next_in_rotation = get_next_rotation_workout(rotation_list, last_workout)
-            rotation_key = f"{last_workout}::{next_in_rotation}"
-
-            if st.session_state.get("rotation_plan_key") != rotation_key:
-                st.session_state.rotation_plan_key = rotation_key
-                if recommended_template:
-                    st.session_state.todays_workout_template = recommended_template
-
-        # When switching away from Manual Override, apply the new mode's recommendation
-        if st.session_state.get("last_workout_selection_mode") != selection_mode:
-            st.session_state.last_workout_selection_mode = selection_mode
-            if recommended_template:
-                st.session_state.todays_workout_template = recommended_template
-
-        selected_todays_template = st.session_state.get(
-            "todays_workout_template", selected_todays_template
-        )
+            # The selectbox return value is the source of truth for the user's
+            # choice. Persist it back into app state (NOT the widget key) so a
+            # manual pick survives the next rerun.
+            st.session_state.todays_workout_template_value = selected_todays_template
 
         with st.container(border=True):
             st.markdown(f'<p class="gym-hero">{selected_todays_template}</p>', unsafe_allow_html=True)
