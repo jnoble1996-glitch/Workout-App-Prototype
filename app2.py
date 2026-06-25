@@ -2429,14 +2429,15 @@ def render_todays_workout_manual_log(
     for set_number in range(1, int(num_sets) + 1):
         with st.container(border=True):
             st.markdown(f"**Set {set_number}**")
-            weight = st.number_input(
+            weight_col, reps_col = st.columns(2)
+            weight = weight_col.number_input(
                 "Weight (lbs)",
                 min_value=0,
                 step=weight_increment,
                 format="%d",
                 key=f"todays_baseline_weight_{key_base}_{set_number}",
             )
-            reps = st.number_input(
+            reps = reps_col.number_input(
                 "Reps",
                 min_value=1,
                 value=default_reps,
@@ -2563,79 +2564,73 @@ def try_auto_start_rest_timer():
 
 
 def render_rest_timer_section():
-    """Show rest timer controls near the top of Today's Workout."""
-    with st.container(border=True):
-        st.markdown("**Rest Timer**")
-        st.caption("Rest between sets without leaving Today's Workout.")
+    """Show rest timer controls (caller may wrap in an expander on Today's Workout)."""
+    st.caption("Rest between sets. The bar at the bottom stays visible while you scroll.")
 
-        duration_choice = st.radio(
-            "Rest duration",
-            [
-                "60 seconds",
-                "90 seconds",
-                "120 seconds",
-                "180 seconds",
-                "Custom",
-            ],
-            key="rest_timer_duration_choice",
+    duration_choice = st.radio(
+        "Rest duration",
+        [
+            "60 seconds",
+            "90 seconds",
+            "120 seconds",
+            "180 seconds",
+            "Custom",
+        ],
+        key="rest_timer_duration_choice",
+        horizontal=True,
+    )
+
+    if duration_choice == "Custom":
+        custom_seconds = st.number_input(
+            "Custom seconds",
+            min_value=1,
+            max_value=600,
+            value=st.session_state.rest_timer_duration_seconds,
+            step=15,
+            key="rest_timer_custom_seconds",
         )
+        selected_duration = int(custom_seconds)
+    else:
+        selected_duration = int(duration_choice.split()[0])
 
-        if duration_choice == "Custom":
-            custom_seconds = st.number_input(
-                "Custom seconds",
-                min_value=1,
-                max_value=600,
-                value=st.session_state.rest_timer_duration_seconds,
-                step=15,
-                key="rest_timer_custom_seconds",
-            )
-            selected_duration = int(custom_seconds)
-        else:
-            selected_duration = int(duration_choice.split()[0])
+    st.session_state.rest_timer_duration_seconds = selected_duration
 
-        st.session_state.rest_timer_duration_seconds = selected_duration
+    st.checkbox(
+        "Auto-start rest timer after logging a set",
+        key="auto_start_rest_timer",
+    )
 
-        st.checkbox(
-            "Auto-start rest timer after logging a set",
-            key="auto_start_rest_timer",
-        )
+    timer_col1, timer_col2 = st.columns(2)
+    if timer_col1.button(
+        "Start Timer",
+        key="start_rest_timer_button",
+        type="primary",
+        use_container_width=True,
+    ):
+        start_rest_timer(st.session_state.rest_timer_duration_seconds)
 
-        if st.button(
-            "Start Timer",
-            key="start_rest_timer_button",
-            use_container_width=True,
-        ):
-            start_rest_timer(st.session_state.rest_timer_duration_seconds)
+    if timer_col2.button(
+        "Stop / Reset",
+        key="stop_rest_timer_button",
+        use_container_width=True,
+    ):
+        stop_rest_timer()
 
-        if st.button(
-            "Stop Timer",
-            key="stop_rest_timer_button",
-            use_container_width=True,
-        ):
-            stop_rest_timer()
+    remaining_seconds = 0
+    if st.session_state.rest_timer_is_running:
+        remaining_seconds = get_rest_timer_remaining_seconds()
 
-        if st.button(
-            "Reset Timer",
-            key="reset_rest_timer_button",
-            use_container_width=True,
-        ):
-            stop_rest_timer()
-
-        remaining_seconds = 0
-        if st.session_state.rest_timer_is_running:
-            remaining_seconds = get_rest_timer_remaining_seconds()
-
-        if st.session_state.rest_timer_is_running and remaining_seconds > 0:
-            st.markdown(f"Rest timer: **{format_seconds(remaining_seconds)}** remaining")
-            # Rerun about once per second while counting down. No sleep loop needed.
-            st_autorefresh(interval=1000, key="rest_timer_autorefresh")
-        elif (
-            st.session_state.rest_timer_end_time is not None
-            and time.time() >= st.session_state.rest_timer_end_time
-        ):
-            st.success("Rest complete")
-        else:
-            st.caption("Rest timer: ready")
+    if st.session_state.rest_timer_is_running and remaining_seconds > 0:
+        st.markdown(f"Rest timer: **{format_seconds(remaining_seconds)}** remaining")
+        # Rerun about once per second while counting down. No sleep loop needed.
+        st_autorefresh(interval=1000, key="rest_timer_autorefresh")
+    elif (
+        st.session_state.rest_timer_end_time is not None
+        and time.time() >= st.session_state.rest_timer_end_time
+    ):
+        st.success("Rest complete")
+    else:
+        st.caption("Rest timer: ready")
 
 
 def render_sticky_rest_timer():
@@ -2677,9 +2672,9 @@ def render_sticky_rest_timer():
             left: 0;
             right: 0;
             z-index: 9999;
-            padding: 10px 16px;
+            padding: 14px 16px;
             text-align: center;
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 700;
             background-color: {bar_background};
             color: {bar_color};
@@ -2765,6 +2760,412 @@ def show_finished_workout_summary(summary):
             st.write("Exercises logged: No sets logged")
 
 
+def inject_mobile_css():
+    """
+    Light CSS tweaks for phone use in the gym.
+
+    Keeps tap targets large, leaves room for the sticky rest timer, and avoids
+    rewriting the app in another framework.
+    """
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 0.75rem;
+            padding-bottom: 5rem;
+            max-width: 42rem;
+        }
+        div[data-testid="stButton"] > button {
+            min-height: 2.85rem;
+            font-size: 1rem;
+        }
+        div[data-testid="stButton"] > button[kind="primary"] {
+            font-weight: 700;
+        }
+        .gym-hero {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+        .gym-subtle {
+            color: #6b7280;
+            font-size: 0.85rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def count_completed_sets_in_plan(active_plan):
+    """Return how many recommended sets are logged in the current workout session."""
+    if not active_plan:
+        return 0, 0
+
+    total_sets = 0
+    for exercise_plan in active_plan.get("exercises", []):
+        if not exercise_plan.get("has_history") or not exercise_plan.get("recommendations"):
+            continue
+        for recommendation in exercise_plan["recommendations"]:
+            for planned_set in recommendation.get("sets", []):
+                total_sets += 1
+
+    completed_sets = len(st.session_state.get("completed_recommended_sets", []))
+    return completed_sets, total_sets
+
+
+def render_admin_data_section():
+    """Advanced raw data tools — shown inside the Settings tab."""
+    with st.expander("Admin & data", expanded=False):
+        st.caption("Raw workout log, edits, deletes, and backups.")
+
+        with st.expander("Raw Workout Log"):
+            st.warning("This is raw stored data — not the main workout interface.")
+            workouts = load_workouts()
+
+            if workouts:
+                st.dataframe(workouts, use_container_width=True)
+            else:
+                st.info("No workouts logged yet. Use **Log** to save your first entry.")
+
+        with st.expander("Edit Workout History"):
+            st.caption("Filter first, then edit the exact row you need.")
+            st.caption("Backups are saved automatically before edits and deletes.")
+
+            # Undo only works during the current Streamlit session (until the app reloads).
+            if st.session_state.last_deleted_entries:
+                st.info(f"Last delete: {st.session_state.last_delete_description}")
+
+                if st.button("Undo Last Delete", key="undo_last_delete_button"):
+                    workouts = load_workouts()
+                    for deleted_entry in st.session_state.last_deleted_entries:
+                        workouts.append(deleted_entry)
+                    save_workouts(workouts)
+                    st.session_state.last_deleted_entries = []
+                    st.session_state.last_delete_description = ""
+                    st.success("Last delete undone.")
+                    st.rerun()
+
+            editable_workouts = load_workouts()
+
+            if not editable_workouts:
+                st.info("No logged workouts to edit yet.")
+            else:
+                # Step 1: choose filters to narrow down the list.
+                exercise_options = ["All"] + get_unique_exercises(editable_workouts)
+                workout_name_options = ["All"] + get_unique_workout_names(editable_workouts)
+                date_options = ["All"] + get_unique_dates(editable_workouts)
+
+                filter_col1, filter_col2, filter_col3 = st.columns(3)
+                exercise_filter = filter_col1.selectbox(
+                    "Exercise filter",
+                    exercise_options,
+                    key="edit_history_exercise_filter",
+                )
+                workout_name_filter = filter_col2.selectbox(
+                    "Workout name filter",
+                    workout_name_options,
+                    key="edit_history_workout_name_filter",
+                )
+                date_filter = filter_col3.selectbox(
+                    "Date filter",
+                    date_options,
+                    key="edit_history_date_filter",
+                )
+
+                matching_indices = filter_workout_entry_indices(
+                    editable_workouts,
+                    exercise_filter,
+                    workout_name_filter,
+                    date_filter,
+                )
+
+                st.caption(f"Showing {len(matching_indices)} matching entries.")
+
+                if not matching_indices:
+                    st.info("No entries match these filters.")
+                else:
+                    # Step 2: show matching entries as mobile-friendly cards.
+                    for original_index in matching_indices:
+                        entry = editable_workouts[original_index]
+                        exercise_name = entry.get("exercise", "Unknown exercise")
+                        entry_date = entry.get("date", "Unknown date")
+                        workout_name = entry.get("workout_name", "Unknown workout")
+                        set_number = entry.get("set_number", "?")
+                        weight = entry.get("weight", 0)
+                        reps = entry.get("reps", 0)
+                        estimated_1rm = entry.get("estimated_1rm", "—")
+                        notes_text = entry.get("notes", "")
+
+                        with st.container(border=True):
+                            st.markdown(f"**{exercise_name}**")
+                            st.caption(f"{workout_name} · {entry_date}")
+                            session_id = entry.get("session_id")
+                            if session_id:
+                                st.caption(f"Session: {format_session_id_caption(session_id)}")
+                            st.write(f"Set {set_number}: {int(weight)} lbs × {reps} reps")
+                            st.write(f"e1RM: {estimated_1rm} lbs")
+
+                            if notes_text:
+                                if len(notes_text) > 40:
+                                    st.caption(f"Notes: {notes_text[:40]}...")
+                                else:
+                                    st.caption(f"Notes: {notes_text}")
+
+                            edit_col, delete_set_col, delete_exercise_col = st.columns(3)
+
+                            if edit_col.button("Edit", key=f"edit_workout_row_{original_index}"):
+                                # Store the original workouts.json index, not the filtered row position.
+                                st.session_state.edit_workout_entry_index = original_index
+                                st.session_state.delete_set_index = None
+                                st.session_state.delete_exercise_info = None
+                                st.rerun()
+
+                            if delete_set_col.button(
+                                "Delete Set",
+                                key=f"delete_set_row_{original_index}",
+                            ):
+                                st.session_state.delete_set_index = original_index
+                                st.session_state.delete_exercise_info = None
+                                st.session_state.edit_workout_entry_index = None
+                                st.rerun()
+
+                            if delete_exercise_col.button(
+                                "Delete Exercise",
+                                key=f"delete_exercise_row_{original_index}",
+                            ):
+                                match_count = count_matching_exercise_entries(
+                                    editable_workouts,
+                                    entry_date,
+                                    workout_name,
+                                    exercise_name,
+                                )
+                                st.session_state.delete_exercise_info = {
+                                    "date": entry_date,
+                                    "workout_name": workout_name,
+                                    "exercise": exercise_name,
+                                    "match_count": match_count,
+                                }
+                                st.session_state.delete_set_index = None
+                                st.session_state.edit_workout_entry_index = None
+                                st.rerun()
+
+                # Step 3: confirm deleting one exact logged set.
+                delete_set_index = st.session_state.delete_set_index
+
+                if delete_set_index is not None:
+                    current_workouts = load_workouts()
+
+                    if delete_set_index < 0 or delete_set_index >= len(current_workouts):
+                        st.session_state.delete_set_index = None
+                    else:
+                        st.divider()
+                        entry_to_delete = current_workouts[delete_set_index]
+                        entry_date = entry_to_delete.get("date", "Unknown date")
+                        workout_name = entry_to_delete.get("workout_name", "Unknown workout")
+                        exercise_name = entry_to_delete.get("exercise", "Unknown exercise")
+                        set_number = entry_to_delete.get("set_number", "?")
+                        weight = entry_to_delete.get("weight", 0)
+                        reps = entry_to_delete.get("reps", 0)
+
+                        st.warning("Are you sure you want to delete this set?")
+                        st.write(
+                            f"{entry_date} | {workout_name} | {exercise_name} | "
+                            f"Set {set_number} | {int(weight)} lbs × {reps}"
+                        )
+                        confirm_delete_set = st.checkbox(
+                            "I understand this will permanently delete this logged set.",
+                            key=f"confirm_delete_set_checkbox_{delete_set_index}",
+                        )
+
+                        confirm_set_col, cancel_set_col = st.columns(2)
+
+                        if confirm_set_col.button(
+                            "Confirm Delete Set",
+                            key=f"confirm_delete_set_button_{delete_set_index}",
+                            disabled=not confirm_delete_set,
+                            type="primary",
+                        ):
+                            create_workouts_backup("before_delete_set")
+                            workouts_after_delete = load_workouts()
+                            deleted_entry = dict(workouts_after_delete[delete_set_index])
+                            st.session_state.last_deleted_entries = [deleted_entry]
+                            st.session_state.last_delete_description = (
+                                f"Deleted 1 set: {exercise_name}, {int(weight)} lbs × {reps}"
+                            )
+                            del workouts_after_delete[delete_set_index]
+                            save_workouts(workouts_after_delete)
+                            st.session_state.delete_set_index = None
+                            st.session_state.edit_workout_entry_index = None
+                            st.success("Logged set deleted.")
+                            st.rerun()
+
+                        if cancel_set_col.button(
+                            "Cancel Delete Set",
+                            key=f"cancel_delete_set_button_{delete_set_index}",
+                        ):
+                            st.session_state.delete_set_index = None
+                            st.rerun()
+
+                # Step 4: confirm deleting all sets for one exercise in one workout session.
+                delete_exercise_info = st.session_state.delete_exercise_info
+
+                if delete_exercise_info is not None:
+                    st.divider()
+                    entry_date = delete_exercise_info["date"]
+                    workout_name = delete_exercise_info["workout_name"]
+                    exercise_name = delete_exercise_info["exercise"]
+                    match_count = delete_exercise_info["match_count"]
+
+                    st.warning(
+                        f"This will delete {match_count} logged sets for {exercise_name} "
+                        f"from {workout_name} on {entry_date}."
+                    )
+                    confirm_delete_exercise = st.checkbox(
+                        "I understand this will permanently delete this logged exercise.",
+                        key=(
+                            f"confirm_delete_exercise_checkbox_{entry_date}_"
+                            f"{workout_name}_{exercise_name}"
+                        ),
+                    )
+
+                    confirm_exercise_col, cancel_exercise_col = st.columns(2)
+
+                    if confirm_exercise_col.button(
+                        "Confirm Delete Exercise",
+                        key=(
+                            f"confirm_delete_exercise_button_{entry_date}_"
+                            f"{workout_name}_{exercise_name}"
+                        ),
+                        disabled=not confirm_delete_exercise,
+                        type="primary",
+                    ):
+                        create_workouts_backup("before_delete_exercise")
+                        workouts_after_delete = load_workouts()
+                        deleted_entries = collect_matching_exercise_entries(
+                            workouts_after_delete,
+                            entry_date,
+                            workout_name,
+                            exercise_name,
+                        )
+                        st.session_state.last_deleted_entries = deleted_entries
+                        st.session_state.last_delete_description = (
+                            f"Deleted {len(deleted_entries)} sets for {exercise_name} "
+                            f"from {workout_name} on {entry_date}"
+                        )
+                        workouts_after_delete = delete_matching_exercise_entries(
+                            workouts_after_delete,
+                            entry_date,
+                            workout_name,
+                            exercise_name,
+                        )
+                        save_workouts(workouts_after_delete)
+                        st.session_state.delete_exercise_info = None
+                        st.session_state.edit_workout_entry_index = None
+                        st.success("Logged exercise deleted.")
+                        st.rerun()
+
+                    if cancel_exercise_col.button(
+                        "Cancel Delete Exercise",
+                        key=(
+                            f"cancel_delete_exercise_button_{entry_date}_"
+                            f"{workout_name}_{exercise_name}"
+                        ),
+                    ):
+                        st.session_state.delete_exercise_info = None
+                        st.rerun()
+
+                # Step 5: when a row is selected, show an edit form below the table.
+                edit_index = st.session_state.edit_workout_entry_index
+
+                if edit_index is not None:
+                    if edit_index < 0 or edit_index >= len(editable_workouts):
+                        st.session_state.edit_workout_entry_index = None
+                    else:
+                        st.divider()
+                        st.markdown("**Edit selected entry**")
+                        selected_entry = editable_workouts[edit_index]
+
+                        edited_date = st.text_input(
+                            "Date",
+                            value=selected_entry.get("date", ""),
+                            key=f"edit_workout_history_date_{edit_index}",
+                        )
+                        edited_workout_name = st.text_input(
+                            "Workout name",
+                            value=selected_entry.get("workout_name", ""),
+                            key=f"edit_workout_history_workout_name_{edit_index}",
+                        )
+                        edited_exercise = st.text_input(
+                            "Exercise",
+                            value=selected_entry.get("exercise", ""),
+                            key=f"edit_workout_history_exercise_{edit_index}",
+                        )
+                        edited_set_number = st.number_input(
+                            "Set number",
+                            min_value=1,
+                            step=1,
+                            value=int(selected_entry.get("set_number", 1)),
+                            key=f"edit_workout_history_set_number_{edit_index}",
+                        )
+                        weight_col, reps_col = st.columns(2)
+                        edited_weight = weight_col.number_input(
+                            "Weight (lbs)",
+                            min_value=0,
+                            step=1,
+                            format="%d",
+                            value=int(selected_entry.get("weight", 0)),
+                            key=f"edit_workout_history_weight_{edit_index}",
+                        )
+                        edited_reps = reps_col.number_input(
+                            "Reps",
+                            min_value=1,
+                            step=1,
+                            value=int(selected_entry.get("reps", 1)),
+                            key=f"edit_workout_history_reps_{edit_index}",
+                        )
+                        edited_notes = st.text_area(
+                            "Notes",
+                            value=selected_entry.get("notes", ""),
+                            key=f"edit_workout_history_notes_{edit_index}",
+                        )
+
+                        save_col, cancel_col = st.columns(2)
+
+                        if save_col.button(
+                            "Save Changes",
+                            key=f"save_workout_history_button_{edit_index}",
+                            type="primary",
+                        ):
+                            create_workouts_backup("before_edit")
+                            # Start from the existing entry so optional fields are preserved.
+                            updated_entry = dict(selected_entry)
+                            updated_entry["date"] = edited_date.strip()
+                            updated_entry["workout_name"] = edited_workout_name.strip()
+                            updated_entry["exercise"] = edited_exercise.strip()
+                            updated_entry["set_number"] = int(edited_set_number)
+                            updated_entry["weight"] = int(edited_weight)
+                            updated_entry["reps"] = int(edited_reps)
+                            updated_entry["notes"] = edited_notes
+                            updated_entry["estimated_1rm"] = round(
+                                estimate_1rm(updated_entry["weight"], updated_entry["reps"])
+                            )
+                            updated_entry["volume"] = updated_entry["weight"] * updated_entry["reps"]
+
+                            editable_workouts = load_workouts()
+                            editable_workouts[edit_index] = updated_entry
+                            save_workouts(editable_workouts)
+                            st.session_state.edit_workout_entry_index = None
+                            st.success("Workout entry updated!")
+                            st.rerun()
+
+                        if cancel_col.button(
+                            "Cancel Edit",
+                            key=f"cancel_edit_workout_button_{edit_index}",
+                        ):
+                            st.session_state.edit_workout_entry_index = None
+                            st.rerun()
+
 # --- 1. App title ---
 initialize_database()
 
@@ -2836,9 +3237,11 @@ migrate_exercise_library_json_to_sqlite_if_needed()
 migrate_workout_templates_json_to_sqlite_if_needed()
 migrate_workout_plan_json_to_sqlite_if_needed()
 
-st.title("Workout Programming App")
+inject_mobile_css()
+
+st.title("Workout")
 if not (ENABLE_AUTH and is_auth_configured() and safe_user_is_logged_in()):
-    st.caption(f"Current user: **{get_logged_in_display_name()}**")
+    st.caption(f"Signed in as **{get_logged_in_display_name()}**")
 
 render_onboarding_card(current_user_id)
 
@@ -2860,44 +3263,96 @@ if ENABLE_LOCAL_USER_SWITCHER:
                 clear_user_specific_session_state()
                 st.rerun()
 
-tab_todays_workout, tab_manual_log, tab_exercise_history, tab_exercise_library, tab_workout_templates, tab_data = st.tabs([
-    "🏋️ Today's Workout",
-    "📝 Manual Log",
-    "📈 Exercise History / Progress",
-    "📚 Exercise Library",
-    "🗓️ Workout Templates / Plans",
-    "⚙️ Data",
+tab_workout, tab_log, tab_progress, tab_library, tab_settings = st.tabs([
+    "🏋️ Workout",
+    "📝 Log",
+    "📈 Progress",
+    "📚 Library",
+    "⚙️ Settings",
 ])
 
 
-# --- Tab: Today's Workout ---
-with tab_todays_workout:
-    st.subheader("Today's Workout")
-    st.caption("Your main dashboard for today's session and recommended sets.")
-
-    # completed_recommended_sets tracks logged sets by stable set_id from active_workout_plan.
+# --- Tab: Workout (Today's Workout — home screen) ---
+with tab_workout:
     todays_templates = load_templates()
     todays_workouts = load_workouts()
 
-    if todays_templates:
+    if not todays_templates:
+        st.info("No workout templates yet.")
+        st.caption(
+            "Create templates under **Settings → Workout templates**, or use the starter "
+            "setup card above."
+        )
+    else:
         todays_template_names = get_template_names(todays_templates)
         workout_plan = load_workout_plan()
         today_key = str(date.today())
 
-        # --- Workout selection mode ---
-        selection_mode = st.radio(
-            "Workout selection mode",
-            ["Weekly Schedule Mode", "Rotation Mode", "Manual Override"],
-            key="workout_selection_mode",
+        with st.expander("Schedule & template options", expanded=False):
+            selection_mode = st.radio(
+                "Workout selection mode",
+                ["Weekly Schedule Mode", "Rotation Mode", "Manual Override"],
+                key="workout_selection_mode",
+            )
+
+            mode_help_text = {
+                "Weekly Schedule Mode": "Uses the workout assigned to today's weekday in your saved plan.",
+                "Rotation Mode": "Follows your weekly plan order based on your most recent logged workout.",
+                "Manual Override": "You choose the template. The app will not auto-select for you.",
+            }
+            st.caption(mode_help_text[selection_mode])
+
+            if selection_mode == "Weekly Schedule Mode":
+                mode_key = "weekly"
+            elif selection_mode == "Rotation Mode":
+                mode_key = "rotation"
+            else:
+                mode_key = "manual"
+
+            recommended_template = get_default_template_for_mode(
+                mode_key,
+                workout_plan,
+                todays_workouts,
+                todays_templates,
+            )
+
+            st.markdown("**Today's recommendation**")
+            if mode_key == "weekly":
+                planned_workout = get_weekly_mode_template(workout_plan, todays_templates)
+                if planned_workout == "":
+                    st.info("Today is scheduled as a rest day.")
+                else:
+                    st.success(planned_workout)
+            elif mode_key == "rotation":
+                rotation_list = build_rotation_from_weekly_plan(workout_plan["weekly_schedule"])
+                last_workout = get_most_recent_logged_workout_name(todays_workouts)
+                if recommended_template is None:
+                    st.info("The next item in your rotation is a rest day.")
+                else:
+                    st.success(recommended_template)
+                if last_workout:
+                    st.caption(f"Last logged workout: {last_workout}")
+                st.caption("Rotation order: " + " → ".join(rotation_list))
+            else:
+                st.info("Manual mode — pick any template below.")
+
+            if mode_key == "manual":
+                template_label = "Choose workout template"
+                template_help = "Select any saved template for today's session."
+            else:
+                template_label = "Workout template"
+                template_help = "Auto-selected from your plan. Change this anytime to override."
+
+            st.selectbox(
+                template_label,
+                todays_template_names,
+                key="todays_workout_template",
+                help=template_help,
+            )
+
+        selection_mode = st.session_state.get(
+            "workout_selection_mode", "Weekly Schedule Mode"
         )
-
-        mode_help_text = {
-            "Weekly Schedule Mode": "Uses the workout assigned to today's weekday in your saved plan.",
-            "Rotation Mode": "Follows your weekly plan order based on your most recent logged workout.",
-            "Manual Override": "You choose the template. The app will not auto-select for you.",
-        }
-        st.caption(mode_help_text[selection_mode])
-
         if selection_mode == "Weekly Schedule Mode":
             mode_key = "weekly"
         elif selection_mode == "Rotation Mode":
@@ -2910,6 +3365,9 @@ with tab_todays_workout:
             workout_plan,
             todays_workouts,
             todays_templates,
+        )
+        selected_todays_template = st.session_state.get(
+            "todays_workout_template", todays_template_names[0]
         )
 
         # Weekly mode: auto-select once per calendar day
@@ -2937,63 +3395,57 @@ with tab_todays_workout:
             if recommended_template:
                 st.session_state.todays_workout_template = recommended_template
 
-        st.divider()
-
-        # --- Mode status and template picker ---
-        # These stacked cards keep the gym workflow usable on a narrow phone screen.
-        with st.container(border=True):
-            st.markdown("**Today's recommendation**")
-            if mode_key == "weekly":
-                planned_workout = get_weekly_mode_template(workout_plan, todays_templates)
-                if planned_workout == "":
-                    st.info("Today is scheduled as a rest day.")
-                else:
-                    st.success(planned_workout)
-            elif mode_key == "rotation":
-                if recommended_template is None:
-                    st.info("The next item in your rotation is a rest day.")
-                else:
-                    st.success(recommended_template)
-                if last_workout:
-                    st.caption(f"Last logged workout: {last_workout}")
-                st.caption("Rotation order: " + " → ".join(rotation_list))
-            else:
-                st.info("Manual mode — pick any template below.")
+        selected_todays_template = st.session_state.get(
+            "todays_workout_template", selected_todays_template
+        )
 
         with st.container(border=True):
-            if mode_key == "manual":
-                template_label = "Choose workout template"
-                template_help = "Select any saved template for today's session."
-            else:
-                template_label = "Workout template"
-                template_help = "Auto-selected from your plan. Change this anytime to override."
-
-            selected_todays_template = st.selectbox(
-                template_label,
-                todays_template_names,
-                key="todays_workout_template",
-                help=template_help,
+            st.markdown(f'<p class="gym-hero">{selected_todays_template}</p>', unsafe_allow_html=True)
+            completed_sets, total_sets = count_completed_sets_in_plan(
+                st.session_state.active_workout_plan
             )
-            st.caption(f"Currently showing: **{selected_todays_template}**")
+            if total_sets > 0:
+                st.caption(
+                    f"{get_today_weekday()} · {completed_sets}/{total_sets} sets logged"
+                )
+            else:
+                st.caption(f"{get_today_weekday()} · Log sets below")
 
-        if st.button(
-            "Refresh recommendations",
-            key="refresh_recommendations_button",
-            use_container_width=True,
-        ):
-            # Force a new plan using the latest workout history.
-            st.session_state.active_workout_plan = None
+        with st.container(border=True):
+            st.markdown("**Session controls**")
+            if st.button(
+                "Start new workout",
+                key="start_new_workout_button",
+                type="primary",
+                use_container_width=True,
+            ):
+                st.session_state.active_workout_plan = None
+                st.session_state.completed_recommended_sets = []
+                st.session_state.todays_session_added_exercises = []
 
-        if st.button(
-            "Start new workout",
-            key="start_new_workout_button",
-            use_container_width=True,
-        ):
-            # Clear the frozen plan and completed-set tracking for a fresh session.
-            # The next active plan will get a new session_id when it is rebuilt.
-            st.session_state.active_workout_plan = None
-            st.session_state.completed_recommended_sets = []
-            st.session_state.todays_session_added_exercises = []
+            if st.button(
+                "Refresh recommendations",
+                key="refresh_recommendations_button",
+                use_container_width=True,
+            ):
+                st.session_state.active_workout_plan = None
+
+            if st.button(
+                "Finish workout",
+                key="finish_todays_workout_button",
+                type="primary",
+                use_container_width=True,
+            ):
+                active_plan_for_finish = st.session_state.active_workout_plan
+                finish_summary = get_finished_workout_summary(
+                    selected_todays_template,
+                    active_plan_for_finish,
+                )
+                show_finished_workout_summary(finish_summary)
+                st.session_state.active_workout_plan = None
+                st.session_state.completed_recommended_sets = []
+                st.session_state.todays_session_added_exercises = []
+                st.success("Workout finished.")
 
         # Clear stale session data from a previous day or template.
         active_plan = st.session_state.active_workout_plan
@@ -3026,12 +3478,11 @@ with tab_todays_workout:
 
         active_plan = st.session_state.active_workout_plan
 
-        render_rest_timer_section()
+        with st.expander("Rest timer", expanded=False):
+            render_rest_timer_section()
 
-        st.divider()
-        st.markdown("**Gym Mode**")
-        st.caption("Open each exercise card, enter what you actually did, and log sets as you go.")
-        st.info("Recommendations are locked for this workout. Use Refresh recommendations to recalculate.")
+        st.markdown("**Exercises**")
+        st.caption("Recommendations stay locked for this session. Refresh to recalculate.")
 
         if active_plan:
             swap_exercise_library = load_exercise_library()
@@ -3050,7 +3501,7 @@ with tab_todays_workout:
                     add_exercise_library_names.append(library_exercise["name"])
 
                 if not add_exercise_library_names:
-                    st.info("Add exercises in Exercise Library before adding one here.")
+                    st.info("Add exercises in **Library** before adding one here.")
                 else:
                     exercise_to_add_today = st.selectbox(
                         "Exercise to add",
@@ -3094,25 +3545,24 @@ with tab_todays_workout:
                     )
 
                 with st.container(border=True):
-                    st.markdown(f"### {todays_exercise}")
+                    st.markdown(f"**{todays_exercise}**")
                     if added_during_workout:
-                        st.caption("Added during today's workout")
+                        st.caption("Added this session")
                     elif swapped_to:
-                        st.caption(f"Planned: {planned_exercise}")
-                        st.caption(f"Active exercise: {todays_exercise}")
+                        st.caption(f"Planned: {planned_exercise} · Active: {todays_exercise}")
                     else:
-                        st.caption(f"Planned exercise: {planned_exercise}")
+                        st.caption(f"Planned: {planned_exercise}")
 
                     if last_swap:
-                        st.info(
-                            f"Last time you did this workout, you swapped {planned_exercise} "
-                            f"for {last_swap['swapped_to']}."
-                        )
-                        for logged_set in last_swap["sets"]:
-                            st.write(
-                                f"Set {logged_set['set_number']}: "
-                                f"{int(logged_set['weight'])} lbs × {logged_set['reps']}"
+                        with st.expander("Last session swap", expanded=False):
+                            st.caption(
+                                f"Swapped {planned_exercise} for {last_swap['swapped_to']}"
                             )
+                            for logged_set in last_swap["sets"]:
+                                st.caption(
+                                    f"Set {logged_set['set_number']}: "
+                                    f"{int(logged_set['weight'])} lbs × {logged_set['reps']}"
+                                )
 
                     if not added_during_workout:
                         with st.expander("Swap Exercise", expanded=False):
@@ -3162,15 +3612,10 @@ with tab_todays_workout:
 
                     for recommendation in exercise_plan["recommendations"]:
                         rank = recommendation["rank"]
-
-                        st.markdown(f"**Recommendation #{rank}**")
                         st.caption(
-                            f"Set 1 projected 1RM: {recommendation['projected_1rm']} lbs "
-                            f"(+{recommendation['improvement']} lbs)"
+                            f"Option #{rank} · projected 1RM {recommendation['projected_1rm']} lbs "
+                            f"(+{recommendation['improvement']})"
                         )
-                        if swapped_to:
-                            st.caption(f"Logging as: {todays_exercise}")
-                        st.markdown("**Set plan**")
 
                         for planned_set in recommendation["sets"]:
                             set_id = planned_set["set_id"]
@@ -3193,9 +3638,10 @@ with tab_todays_workout:
                                 )
 
                                 if is_completed:
-                                    st.success("Completed")
+                                    st.success("✓ Logged")
                                 else:
-                                    actual_weight = st.number_input(
+                                    weight_col, reps_col = st.columns(2)
+                                    actual_weight = weight_col.number_input(
                                         "Weight (lbs)",
                                         min_value=0,
                                         value=int(target_weight),
@@ -3203,7 +3649,7 @@ with tab_todays_workout:
                                         format="%d",
                                         key=f"actual_weight_{input_key_base}",
                                     )
-                                    actual_reps = st.number_input(
+                                    actual_reps = reps_col.number_input(
                                         "Reps",
                                         min_value=1,
                                         value=int(target_reps),
@@ -3230,6 +3676,7 @@ with tab_todays_workout:
                                     if st.button(
                                         f"Log Set {set_number}",
                                         key=f"log_recommended_set_{set_id}",
+                                        type="primary",
                                         use_container_width=True,
                                         disabled=needs_confirmation and not confirm_suspicious_set,
                                     ):
@@ -3281,7 +3728,7 @@ with tab_todays_workout:
 
         st.divider()
 
-        with st.expander("Explore all target options"):
+        with st.expander("Explore all target options", expanded=False):
             target_templates = load_templates()
             target_workouts = load_workouts()
 
@@ -3325,40 +3772,20 @@ with tab_todays_workout:
             else:
                 st.caption("Save a workout template first to see target options.")
 
-        st.divider()
-
-        if st.button(
-            "Finish Workout",
-            key="finish_todays_workout_button",
-            type="primary",
-            use_container_width=True,
-        ):
-            finish_summary = get_finished_workout_summary(
-                selected_todays_template,
-                active_plan,
-            )
-            show_finished_workout_summary(finish_summary)
-            st.session_state.active_workout_plan = None
-            st.session_state.completed_recommended_sets = []
-            st.session_state.todays_session_added_exercises = []
-            st.success("Workout finished.")
-
-        # Bottom spacer so the fixed rest timer bar does not cover Finish Workout.
+        # Bottom spacer so the fixed rest timer bar does not cover content.
         st.markdown("<div style='height: 70px;'></div>", unsafe_allow_html=True)
         render_sticky_rest_timer()
-    else:
-        st.info("Save a workout template first to use Today's Workout.")
 
 
-# --- Tab: Manual Log ---
-with tab_manual_log:
-    st.subheader("Manual Log")
-    st.caption("Log sets for any exercise. Each set is saved as its own entry.")
+# --- Tab: Log ---
+with tab_log:
+    st.caption("Log any exercise outside of today's template workout.")
 
     exercise_library = load_exercise_library()
 
     if not exercise_library:
-        st.info("Add exercises in the Exercise Library tab before using Manual Log.")
+        st.info("No exercises in your library yet.")
+        st.caption("Add exercises in the **Library** tab first.")
     else:
         exercise_names = []
         for exercise in exercise_library:
@@ -3375,15 +3802,19 @@ with tab_manual_log:
             exercise_name = selected_exercise_name
 
             if selected_exercise:
-                detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
-                detail_col1.caption("Category")
-                detail_col1.write(selected_exercise["category"])
-                detail_col2.caption("Primary muscle")
-                detail_col2.write(selected_exercise["primary_muscle"])
-                detail_col3.caption("Rep range")
-                detail_col3.write(f"{selected_exercise['rep_min']}-{selected_exercise['rep_max']} reps")
-                detail_col4.caption("Weight step")
-                detail_col4.write(f"{selected_exercise['weight_increment']} lbs")
+                with st.expander("Exercise details", expanded=False):
+                    detail_col1, detail_col2 = st.columns(2)
+                    detail_col1.caption("Category")
+                    detail_col1.write(selected_exercise["category"])
+                    detail_col2.caption("Primary muscle")
+                    detail_col2.write(selected_exercise["primary_muscle"])
+                    detail_col3, detail_col4 = st.columns(2)
+                    detail_col3.caption("Rep range")
+                    detail_col3.write(
+                        f"{selected_exercise['rep_min']}-{selected_exercise['rep_max']} reps"
+                    )
+                    detail_col4.caption("Weight step")
+                    detail_col4.write(f"{selected_exercise['weight_increment']} lbs")
 
                 num_sets = st.number_input(
                     "Number of sets",
@@ -3399,30 +3830,23 @@ with tab_manual_log:
                 weight_step = 5.0
 
             st.caption("Enter weight and reps for each set.")
-            header_set, header_weight, header_reps = st.columns([1, 2, 2])
-            header_set.write("**Set**")
-            header_weight.write("**Weight (lbs)**")
-            header_reps.write("**Reps**")
-
             logged_sets = []
             for set_number in range(1, int(num_sets) + 1):
-                col_set, col_weight, col_reps = st.columns([1, 2, 2])
-                col_set.write(f"Set {set_number}")
-
-                weight = col_weight.number_input(
-                    "Weight (lbs)",
-                    min_value=0.0,
-                    step=float(weight_step),
-                    key=f"weight_{set_number}",
-                    label_visibility="collapsed",
-                )
-                reps = col_reps.number_input(
-                    "Reps",
-                    min_value=1,
-                    step=1,
-                    key=f"reps_{set_number}",
-                    label_visibility="collapsed",
-                )
+                with st.container(border=True):
+                    st.markdown(f"**Set {set_number}**")
+                    weight_col, reps_col = st.columns(2)
+                    weight = weight_col.number_input(
+                        "Weight (lbs)",
+                        min_value=0.0,
+                        step=float(weight_step),
+                        key=f"weight_{set_number}",
+                    )
+                    reps = reps_col.number_input(
+                        "Reps",
+                        min_value=1,
+                        step=1,
+                        key=f"reps_{set_number}",
+                    )
 
                 logged_sets.append({
                     "set_number": set_number,
@@ -3509,10 +3933,9 @@ with tab_manual_log:
                     st.success(message)
 
 
-# --- Tab: Exercise History ---
-with tab_exercise_history:
-    st.subheader("Exercise History / Progress")
-    st.caption("Track personal records and progress over time for each exercise.")
+# --- Tab: Progress ---
+with tab_progress:
+    st.caption("Personal records and trends per exercise.")
 
     all_workouts = load_workouts()
     history_exercise_names = get_unique_exercises(all_workouts)
@@ -3546,11 +3969,12 @@ with tab_exercise_history:
                 highest_volume = entry_volume
 
         st.divider()
-        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-        metric_col1.metric("Best estimated 1RM", f"{best_1rm} lbs")
-        metric_col2.metric("Heaviest weight", f"{int(heaviest_weight)} lbs")
-        metric_col3.metric("Highest reps", highest_reps)
-        metric_col4.metric("Highest volume", f"{highest_volume} lbs")
+        metric_row1_col1, metric_row1_col2 = st.columns(2)
+        metric_row1_col1.metric("Best estimated 1RM", f"{best_1rm} lbs")
+        metric_row1_col2.metric("Heaviest weight", f"{int(heaviest_weight)} lbs")
+        metric_row2_col1, metric_row2_col2 = st.columns(2)
+        metric_row2_col1.metric("Highest reps", highest_reps)
+        metric_row2_col2.metric("Highest volume", f"{highest_volume} lbs")
 
         st.divider()
         st.markdown("**1RM trend**")
@@ -3564,24 +3988,25 @@ with tab_exercise_history:
         with st.expander("View detailed history"):
             st.dataframe(exercise_entries, use_container_width=True)
     else:
-        st.info("Log some exercises first to see history here.")
+        st.info("No workout history yet.")
+        st.caption("Log sets in **Workout** or **Log** to see progress here.")
 
 
-# --- Tab: Exercise Library ---
-with tab_exercise_library:
-    st.subheader("Exercise Library")
-    st.caption("Your master list of exercises used when logging workouts and building templates.")
+# --- Tab: Library ---
+with tab_library:
+    st.caption("Master list of exercises for logging and templates.")
 
     exercise_library = load_exercise_library()
 
     if exercise_library:
         st.dataframe(exercise_library, use_container_width=True)
     else:
-        st.info("No exercises in the library yet. Add your first one below.")
+        st.info("Your exercise library is empty.")
+        st.caption("Add your first exercise below.")
 
     st.divider()
 
-    with st.expander("Add New Exercise"):
+    with st.expander("Add new exercise", expanded=not exercise_library):
         st.caption("New exercises appear in Manual Log and template builders.")
         new_exercise_name = st.text_input(
             "Exercise name",
@@ -3600,7 +4025,8 @@ with tab_exercise_library:
             placeholder="Chest",
             key="library_primary_muscle",
         )
-        sets_col, rep_min_col, rep_max_col, increment_col = st.columns(4)
+        sets_col, rep_min_col = st.columns(2)
+        rep_max_col, increment_col = st.columns(2)
         new_default_sets = sets_col.number_input(
             "Default sets",
             min_value=1,
@@ -3631,7 +4057,12 @@ with tab_exercise_library:
             key="library_weight_increment",
         )
 
-        if st.button("Add Exercise", key="add_exercise_to_library_button", type="primary"):
+        if st.button(
+            "Add Exercise",
+            key="add_exercise_to_library_button",
+            type="primary",
+            use_container_width=True,
+        ):
             name = new_exercise_name.strip()
 
             if not name:
@@ -3669,12 +4100,12 @@ with tab_exercise_library:
                     st.success(f"'{name}' added to the library!")
 
 
-# --- Tab: Workout Templates ---
-with tab_workout_templates:
-    st.subheader("Workout Templates / Plans")
-    st.caption("Build templates, set your weekly plan, and choose how Today's Workout picks a session.")
+# --- Tab: Settings (templates, plan, admin) ---
+with tab_settings:
+    st.caption("Templates, weekly plan, and advanced data tools.")
 
-    with st.expander("Weekly Workout Plan", expanded=True):
+    with st.expander("Weekly workout plan", expanded=False):
+        st.markdown("**Weekly workout plan**")
         workout_plan = load_workout_plan()
         plan_templates = load_templates()
 
@@ -3755,7 +4186,7 @@ with tab_workout_templates:
 
     st.divider()
 
-    with st.expander("Create New Template"):
+    with st.expander("Create new template", expanded=False):
         st.caption("Build a reusable list of exercises for Today's Workout.")
         template_name = st.text_input("Template name", placeholder="Push Day")
 
@@ -3765,7 +4196,7 @@ with tab_workout_templates:
             create_library_exercise_names.append(exercise["name"])
 
         if not create_library_exercise_names:
-            st.info("Add exercises in Exercise Library before creating templates.")
+            st.info("Add exercises in **Library** before creating templates.")
         else:
             new_exercise_name = st.selectbox(
                 "Exercise to add",
@@ -3813,7 +4244,7 @@ with tab_workout_templates:
                 st.session_state.template_exercises = []
                 st.success(f"Template '{name}' saved!")
 
-    with st.expander("Edit Existing Template"):
+    with st.expander("Edit existing template", expanded=False):
         edit_templates = load_templates()
 
         if edit_templates:
@@ -3947,379 +4378,27 @@ with tab_workout_templates:
         else:
             st.info("Save a template first before editing.")
 
-    st.divider()
+    with st.expander("View saved templates", expanded=False):
+        saved_templates = load_templates()
 
-    st.markdown("**View Saved Templates**")
-    saved_templates = load_templates()
+        if saved_templates:
+            template_names = get_template_names(saved_templates)
+            selected_template_name = st.selectbox(
+                "Template",
+                template_names,
+                key="view_template",
+            )
 
-    if saved_templates:
-        template_names = get_template_names(saved_templates)
-        selected_template_name = st.selectbox(
-            "Template",
-            template_names,
-            key="view_template",
-        )
+            for template in saved_templates:
+                if template["template_name"] == selected_template_name:
+                    exercise_rows = []
+                    for exercise in template["exercises"]:
+                        exercise_rows.append({"Exercise": exercise})
 
-        for template in saved_templates:
-            if template["template_name"] == selected_template_name:
-                exercise_rows = []
-                for exercise in template["exercises"]:
-                    exercise_rows.append({"Exercise": exercise})
-
-                st.dataframe(exercise_rows, use_container_width=True, hide_index=True)
-                break
-    else:
-        st.info("No templates saved yet. Create one above to get started.")
-
-
-# --- Tab: Data ---
-with tab_data:
-    st.subheader("Data")
-    st.caption("Advanced view of raw app data. Most day-to-day use happens in the other tabs.")
-
-    with st.expander("Raw Workout Log"):
-        st.warning("This is raw stored data — not the main workout interface.")
-        workouts = load_workouts()
-
-        if workouts:
-            st.dataframe(workouts, use_container_width=True)
+                    st.dataframe(exercise_rows, use_container_width=True, hide_index=True)
+                    break
         else:
-            st.info("No workouts logged yet. Use **Manual Log** to save your first entry.")
+            st.info("No templates saved yet. Create one above to get started.")
 
-    with st.expander("Edit Workout History"):
-        st.caption("Filter first, then edit the exact row you need.")
-        st.caption("Backups are saved automatically before edits and deletes.")
+    render_admin_data_section()
 
-        # Undo only works during the current Streamlit session (until the app reloads).
-        if st.session_state.last_deleted_entries:
-            st.info(f"Last delete: {st.session_state.last_delete_description}")
-
-            if st.button("Undo Last Delete", key="undo_last_delete_button"):
-                workouts = load_workouts()
-                for deleted_entry in st.session_state.last_deleted_entries:
-                    workouts.append(deleted_entry)
-                save_workouts(workouts)
-                st.session_state.last_deleted_entries = []
-                st.session_state.last_delete_description = ""
-                st.success("Last delete undone.")
-                st.rerun()
-
-        editable_workouts = load_workouts()
-
-        if not editable_workouts:
-            st.info("No logged workouts to edit yet.")
-        else:
-            # Step 1: choose filters to narrow down the list.
-            exercise_options = ["All"] + get_unique_exercises(editable_workouts)
-            workout_name_options = ["All"] + get_unique_workout_names(editable_workouts)
-            date_options = ["All"] + get_unique_dates(editable_workouts)
-
-            filter_col1, filter_col2, filter_col3 = st.columns(3)
-            exercise_filter = filter_col1.selectbox(
-                "Exercise filter",
-                exercise_options,
-                key="edit_history_exercise_filter",
-            )
-            workout_name_filter = filter_col2.selectbox(
-                "Workout name filter",
-                workout_name_options,
-                key="edit_history_workout_name_filter",
-            )
-            date_filter = filter_col3.selectbox(
-                "Date filter",
-                date_options,
-                key="edit_history_date_filter",
-            )
-
-            matching_indices = filter_workout_entry_indices(
-                editable_workouts,
-                exercise_filter,
-                workout_name_filter,
-                date_filter,
-            )
-
-            st.caption(f"Showing {len(matching_indices)} matching entries.")
-
-            if not matching_indices:
-                st.info("No entries match these filters.")
-            else:
-                # Step 2: show matching entries as mobile-friendly cards.
-                for original_index in matching_indices:
-                    entry = editable_workouts[original_index]
-                    exercise_name = entry.get("exercise", "Unknown exercise")
-                    entry_date = entry.get("date", "Unknown date")
-                    workout_name = entry.get("workout_name", "Unknown workout")
-                    set_number = entry.get("set_number", "?")
-                    weight = entry.get("weight", 0)
-                    reps = entry.get("reps", 0)
-                    estimated_1rm = entry.get("estimated_1rm", "—")
-                    notes_text = entry.get("notes", "")
-
-                    with st.container(border=True):
-                        st.markdown(f"**{exercise_name}**")
-                        st.caption(f"{workout_name} · {entry_date}")
-                        session_id = entry.get("session_id")
-                        if session_id:
-                            st.caption(f"Session: {format_session_id_caption(session_id)}")
-                        st.write(f"Set {set_number}: {int(weight)} lbs × {reps} reps")
-                        st.write(f"e1RM: {estimated_1rm} lbs")
-
-                        if notes_text:
-                            if len(notes_text) > 40:
-                                st.caption(f"Notes: {notes_text[:40]}...")
-                            else:
-                                st.caption(f"Notes: {notes_text}")
-
-                        edit_col, delete_set_col, delete_exercise_col = st.columns(3)
-
-                        if edit_col.button("Edit", key=f"edit_workout_row_{original_index}"):
-                            # Store the original workouts.json index, not the filtered row position.
-                            st.session_state.edit_workout_entry_index = original_index
-                            st.session_state.delete_set_index = None
-                            st.session_state.delete_exercise_info = None
-                            st.rerun()
-
-                        if delete_set_col.button(
-                            "Delete Set",
-                            key=f"delete_set_row_{original_index}",
-                        ):
-                            st.session_state.delete_set_index = original_index
-                            st.session_state.delete_exercise_info = None
-                            st.session_state.edit_workout_entry_index = None
-                            st.rerun()
-
-                        if delete_exercise_col.button(
-                            "Delete Exercise",
-                            key=f"delete_exercise_row_{original_index}",
-                        ):
-                            match_count = count_matching_exercise_entries(
-                                editable_workouts,
-                                entry_date,
-                                workout_name,
-                                exercise_name,
-                            )
-                            st.session_state.delete_exercise_info = {
-                                "date": entry_date,
-                                "workout_name": workout_name,
-                                "exercise": exercise_name,
-                                "match_count": match_count,
-                            }
-                            st.session_state.delete_set_index = None
-                            st.session_state.edit_workout_entry_index = None
-                            st.rerun()
-
-            # Step 3: confirm deleting one exact logged set.
-            delete_set_index = st.session_state.delete_set_index
-
-            if delete_set_index is not None:
-                current_workouts = load_workouts()
-
-                if delete_set_index < 0 or delete_set_index >= len(current_workouts):
-                    st.session_state.delete_set_index = None
-                else:
-                    st.divider()
-                    entry_to_delete = current_workouts[delete_set_index]
-                    entry_date = entry_to_delete.get("date", "Unknown date")
-                    workout_name = entry_to_delete.get("workout_name", "Unknown workout")
-                    exercise_name = entry_to_delete.get("exercise", "Unknown exercise")
-                    set_number = entry_to_delete.get("set_number", "?")
-                    weight = entry_to_delete.get("weight", 0)
-                    reps = entry_to_delete.get("reps", 0)
-
-                    st.warning("Are you sure you want to delete this set?")
-                    st.write(
-                        f"{entry_date} | {workout_name} | {exercise_name} | "
-                        f"Set {set_number} | {int(weight)} lbs × {reps}"
-                    )
-                    confirm_delete_set = st.checkbox(
-                        "I understand this will permanently delete this logged set.",
-                        key=f"confirm_delete_set_checkbox_{delete_set_index}",
-                    )
-
-                    confirm_set_col, cancel_set_col = st.columns(2)
-
-                    if confirm_set_col.button(
-                        "Confirm Delete Set",
-                        key=f"confirm_delete_set_button_{delete_set_index}",
-                        disabled=not confirm_delete_set,
-                        type="primary",
-                    ):
-                        create_workouts_backup("before_delete_set")
-                        workouts_after_delete = load_workouts()
-                        deleted_entry = dict(workouts_after_delete[delete_set_index])
-                        st.session_state.last_deleted_entries = [deleted_entry]
-                        st.session_state.last_delete_description = (
-                            f"Deleted 1 set: {exercise_name}, {int(weight)} lbs × {reps}"
-                        )
-                        del workouts_after_delete[delete_set_index]
-                        save_workouts(workouts_after_delete)
-                        st.session_state.delete_set_index = None
-                        st.session_state.edit_workout_entry_index = None
-                        st.success("Logged set deleted.")
-                        st.rerun()
-
-                    if cancel_set_col.button(
-                        "Cancel Delete Set",
-                        key=f"cancel_delete_set_button_{delete_set_index}",
-                    ):
-                        st.session_state.delete_set_index = None
-                        st.rerun()
-
-            # Step 4: confirm deleting all sets for one exercise in one workout session.
-            delete_exercise_info = st.session_state.delete_exercise_info
-
-            if delete_exercise_info is not None:
-                st.divider()
-                entry_date = delete_exercise_info["date"]
-                workout_name = delete_exercise_info["workout_name"]
-                exercise_name = delete_exercise_info["exercise"]
-                match_count = delete_exercise_info["match_count"]
-
-                st.warning(
-                    f"This will delete {match_count} logged sets for {exercise_name} "
-                    f"from {workout_name} on {entry_date}."
-                )
-                confirm_delete_exercise = st.checkbox(
-                    "I understand this will permanently delete this logged exercise.",
-                    key=(
-                        f"confirm_delete_exercise_checkbox_{entry_date}_"
-                        f"{workout_name}_{exercise_name}"
-                    ),
-                )
-
-                confirm_exercise_col, cancel_exercise_col = st.columns(2)
-
-                if confirm_exercise_col.button(
-                    "Confirm Delete Exercise",
-                    key=(
-                        f"confirm_delete_exercise_button_{entry_date}_"
-                        f"{workout_name}_{exercise_name}"
-                    ),
-                    disabled=not confirm_delete_exercise,
-                    type="primary",
-                ):
-                    create_workouts_backup("before_delete_exercise")
-                    workouts_after_delete = load_workouts()
-                    deleted_entries = collect_matching_exercise_entries(
-                        workouts_after_delete,
-                        entry_date,
-                        workout_name,
-                        exercise_name,
-                    )
-                    st.session_state.last_deleted_entries = deleted_entries
-                    st.session_state.last_delete_description = (
-                        f"Deleted {len(deleted_entries)} sets for {exercise_name} "
-                        f"from {workout_name} on {entry_date}"
-                    )
-                    workouts_after_delete = delete_matching_exercise_entries(
-                        workouts_after_delete,
-                        entry_date,
-                        workout_name,
-                        exercise_name,
-                    )
-                    save_workouts(workouts_after_delete)
-                    st.session_state.delete_exercise_info = None
-                    st.session_state.edit_workout_entry_index = None
-                    st.success("Logged exercise deleted.")
-                    st.rerun()
-
-                if cancel_exercise_col.button(
-                    "Cancel Delete Exercise",
-                    key=(
-                        f"cancel_delete_exercise_button_{entry_date}_"
-                        f"{workout_name}_{exercise_name}"
-                    ),
-                ):
-                    st.session_state.delete_exercise_info = None
-                    st.rerun()
-
-            # Step 5: when a row is selected, show an edit form below the table.
-            edit_index = st.session_state.edit_workout_entry_index
-
-            if edit_index is not None:
-                if edit_index < 0 or edit_index >= len(editable_workouts):
-                    st.session_state.edit_workout_entry_index = None
-                else:
-                    st.divider()
-                    st.markdown("**Edit selected entry**")
-                    selected_entry = editable_workouts[edit_index]
-
-                    edited_date = st.text_input(
-                        "Date",
-                        value=selected_entry.get("date", ""),
-                        key=f"edit_workout_history_date_{edit_index}",
-                    )
-                    edited_workout_name = st.text_input(
-                        "Workout name",
-                        value=selected_entry.get("workout_name", ""),
-                        key=f"edit_workout_history_workout_name_{edit_index}",
-                    )
-                    edited_exercise = st.text_input(
-                        "Exercise",
-                        value=selected_entry.get("exercise", ""),
-                        key=f"edit_workout_history_exercise_{edit_index}",
-                    )
-                    edited_set_number = st.number_input(
-                        "Set number",
-                        min_value=1,
-                        step=1,
-                        value=int(selected_entry.get("set_number", 1)),
-                        key=f"edit_workout_history_set_number_{edit_index}",
-                    )
-                    weight_col, reps_col = st.columns(2)
-                    edited_weight = weight_col.number_input(
-                        "Weight (lbs)",
-                        min_value=0,
-                        step=1,
-                        format="%d",
-                        value=int(selected_entry.get("weight", 0)),
-                        key=f"edit_workout_history_weight_{edit_index}",
-                    )
-                    edited_reps = reps_col.number_input(
-                        "Reps",
-                        min_value=1,
-                        step=1,
-                        value=int(selected_entry.get("reps", 1)),
-                        key=f"edit_workout_history_reps_{edit_index}",
-                    )
-                    edited_notes = st.text_area(
-                        "Notes",
-                        value=selected_entry.get("notes", ""),
-                        key=f"edit_workout_history_notes_{edit_index}",
-                    )
-
-                    save_col, cancel_col = st.columns(2)
-
-                    if save_col.button(
-                        "Save Changes",
-                        key=f"save_workout_history_button_{edit_index}",
-                        type="primary",
-                    ):
-                        create_workouts_backup("before_edit")
-                        # Start from the existing entry so optional fields are preserved.
-                        updated_entry = dict(selected_entry)
-                        updated_entry["date"] = edited_date.strip()
-                        updated_entry["workout_name"] = edited_workout_name.strip()
-                        updated_entry["exercise"] = edited_exercise.strip()
-                        updated_entry["set_number"] = int(edited_set_number)
-                        updated_entry["weight"] = int(edited_weight)
-                        updated_entry["reps"] = int(edited_reps)
-                        updated_entry["notes"] = edited_notes
-                        updated_entry["estimated_1rm"] = round(
-                            estimate_1rm(updated_entry["weight"], updated_entry["reps"])
-                        )
-                        updated_entry["volume"] = updated_entry["weight"] * updated_entry["reps"]
-
-                        editable_workouts = load_workouts()
-                        editable_workouts[edit_index] = updated_entry
-                        save_workouts(editable_workouts)
-                        st.session_state.edit_workout_entry_index = None
-                        st.success("Workout entry updated!")
-                        st.rerun()
-
-                    if cancel_col.button(
-                        "Cancel Edit",
-                        key=f"cancel_edit_workout_button_{edit_index}",
-                    ):
-                        st.session_state.edit_workout_entry_index = None
-                        st.rerun()
