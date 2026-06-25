@@ -14,6 +14,12 @@ WORKOUT_PLAN_FILE = "workout_plan.json"
 DATABASE_FILE = "workout_app.db"
 BACKUPS_DIR = "backups"
 
+# --- Database backend selection ---
+# "sqlite" is the only supported backend today. This switch exists so a hosted
+# backend (e.g. Supabase/Postgres) can be added later WITHOUT changing the
+# persistence boundary functions (load_*/save_*) or any UI code.
+DATABASE_BACKEND = "sqlite"
+
 # Temporary single-user id until authentication is added.
 DEFAULT_USER_ID = "local_user"
 
@@ -69,6 +75,20 @@ TEXT_WORKOUT_DB_COLUMNS = [
     "swapped_to",
     "session_id",
 ]
+
+
+def get_database_backend():
+    """
+    Return the active database backend name.
+
+    For now this always returns "sqlite", so local development is unchanged.
+    Later this can read from st.secrets or an environment variable to switch to
+    a hosted Postgres backend, without touching any UI or persistence boundary
+    function. Example future logic:
+
+        return st.secrets.get("database", {}).get("backend", DATABASE_BACKEND)
+    """
+    return DATABASE_BACKEND
 
 
 def is_auth_configured():
@@ -182,6 +202,18 @@ def require_login():
         st.logout()
 
 
+# =============================================================================
+# SQLite backend layer
+# -----------------------------------------------------------------------------
+# Everything in this section is SQLite-specific. These functions are named with
+# a "_sqlite" suffix (or open sqlite3 connections directly) so they are easy to
+# spot and easy to replace when adding a hosted backend later.
+#
+# The app does NOT call these directly. Instead it calls the backend-neutral
+# persistence boundary functions further below (load_*_for_user / save_*_for_user
+# and the no-argument load_*/save_* wrappers), which route to the active backend
+# returned by get_database_backend().
+# =============================================================================
 def _ensure_workouts_user_id_column(connection):
     """Add user_id to older workout tables and backfill existing rows."""
     cursor = connection.execute("PRAGMA table_info(workouts)")
@@ -300,6 +332,15 @@ def initialize_database():
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT PRIMARY KEY,
+                skipped_onboarding INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
+            )
+            """
+        )
 
 
 WEEKDAY_NAMES = [
@@ -407,6 +448,9 @@ def migrate_workouts_json_to_sqlite_if_needed():
     initialize_database()
 
     user_id = get_current_user_id()
+    if user_id != DEFAULT_USER_ID:
+        return
+
     if get_workout_table_count(user_id) > 0:
         return
 
@@ -444,7 +488,7 @@ def migrate_workouts_json_to_sqlite_if_needed():
         st.warning(f"Could not back up {WORKOUTS_FILE} before migration: {error}")
 
 
-def load_workouts_for_user(user_id):
+def load_workouts_sqlite(user_id):
     """
     Read one user's workout history from SQLite.
 
@@ -467,9 +511,19 @@ def load_workouts_for_user(user_id):
     return workouts
 
 
+# --- Persistence boundary: workouts ---
+# These route to the active backend. Today only SQLite is implemented.
+def load_workouts_for_user(user_id):
+    """Persistence boundary: read one user's workout history from the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        return load_workouts_sqlite(user_id)
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def load_workouts():
     """
-    Read workout history from SQLite for the current user.
+    Read workout history for the current user.
 
     The rest of the app can keep calling load_workouts() like before, even
     though workouts.json is no longer the main workout-history store.
@@ -477,7 +531,7 @@ def load_workouts():
     return load_workouts_for_user(get_current_user_id())
 
 
-def save_workouts_for_user(workouts, user_id):
+def save_workouts_sqlite(workouts, user_id):
     """
     Save one user's workout history to SQLite using the list-of-dicts interface.
 
@@ -502,6 +556,15 @@ def save_workouts_for_user(workouts, user_id):
                 f"INSERT INTO workouts ({column_names}) VALUES ({placeholders})",
                 values,
             )
+
+
+def save_workouts_for_user(workouts, user_id):
+    """Persistence boundary: save one user's workout history to the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        save_workouts_sqlite(workouts, user_id)
+        return
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
 
 
 def save_workouts(workouts):
@@ -569,7 +632,7 @@ def create_workouts_backup(reason):
         return False
 
 
-def load_templates_for_user(user_id):
+def load_templates_sqlite(user_id):
     """
     Read one user's workout templates from SQLite.
 
@@ -614,8 +677,17 @@ def load_templates_for_user(user_id):
     return templates
 
 
+# --- Persistence boundary: workout templates ---
+def load_templates_for_user(user_id):
+    """Persistence boundary: read one user's workout templates from the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        return load_templates_sqlite(user_id)
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def load_templates():
-    """Read the current user's workout templates from SQLite."""
+    """Read the current user's workout templates."""
     return load_templates_for_user(get_current_user_id())
 
 
@@ -630,7 +702,7 @@ def get_workout_templates_table_count(user_id):
         return cursor.fetchone()[0]
 
 
-def save_templates_for_user(templates, user_id):
+def save_templates_sqlite(templates, user_id):
     """
     Save one user's workout templates to SQLite.
 
@@ -691,8 +763,17 @@ def save_templates_for_user(templates, user_id):
                 )
 
 
+def save_templates_for_user(templates, user_id):
+    """Persistence boundary: save one user's workout templates to the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        save_templates_sqlite(templates, user_id)
+        return
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def save_templates(templates):
-    """Save the current user's workout templates to SQLite."""
+    """Save the current user's workout templates."""
     save_templates_for_user(templates, get_current_user_id())
 
 
@@ -706,6 +787,9 @@ def migrate_workout_templates_json_to_sqlite_if_needed():
     initialize_database()
 
     user_id = get_current_user_id()
+    if user_id != DEFAULT_USER_ID:
+        return
+
     if get_workout_templates_table_count(user_id) > 0:
         return
 
@@ -743,7 +827,7 @@ def migrate_workout_templates_json_to_sqlite_if_needed():
     )
 
 
-def load_workout_plan_for_user(user_id):
+def load_workout_plan_sqlite(user_id):
     """
     Read one user's weekly workout plan from SQLite.
 
@@ -775,8 +859,17 @@ def load_workout_plan_for_user(user_id):
     return plan
 
 
+# --- Persistence boundary: weekly workout plan ---
+def load_workout_plan_for_user(user_id):
+    """Persistence boundary: read one user's weekly workout plan from the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        return load_workout_plan_sqlite(user_id)
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def load_workout_plan():
-    """Read the current user's weekly workout plan from SQLite."""
+    """Read the current user's weekly workout plan."""
     return load_workout_plan_for_user(get_current_user_id())
 
 
@@ -791,7 +884,7 @@ def user_has_workout_plan(user_id):
         return cursor.fetchone() is not None
 
 
-def save_workout_plan_for_user(workout_plan, user_id):
+def save_workout_plan_sqlite(workout_plan, user_id):
     """Save one user's weekly workout plan to SQLite."""
     initialize_database()
     timestamp = datetime.now().isoformat(timespec="seconds")
@@ -845,8 +938,17 @@ def save_workout_plan_for_user(workout_plan, user_id):
         )
 
 
+def save_workout_plan_for_user(workout_plan, user_id):
+    """Persistence boundary: save one user's weekly workout plan to the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        save_workout_plan_sqlite(workout_plan, user_id)
+        return
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def save_workout_plan(workout_plan):
-    """Save the current user's weekly workout plan to SQLite."""
+    """Save the current user's weekly workout plan."""
     save_workout_plan_for_user(workout_plan, get_current_user_id())
 
 
@@ -865,7 +967,7 @@ def migrate_workout_plan_json_to_sqlite_if_needed():
 
     plan_to_save = dict(DEFAULT_WORKOUT_PLAN)
 
-    if os.path.exists(WORKOUT_PLAN_FILE):
+    if os.path.exists(WORKOUT_PLAN_FILE) and user_id == DEFAULT_USER_ID:
         try:
             with open(WORKOUT_PLAN_FILE, "r") as file:
                 content = file.read().strip()
@@ -1089,7 +1191,7 @@ def get_planned_workout_for_today(workout_plan, workouts, template_names):
     return workout_plan["weekly_schedule"].get(get_today_weekday(), "")
 
 
-def load_exercise_library_for_user(user_id):
+def load_exercise_library_sqlite(user_id):
     """
     Read one user's exercise library from SQLite.
 
@@ -1126,8 +1228,17 @@ def load_exercise_library_for_user(user_id):
     return exercise_library
 
 
+# --- Persistence boundary: exercise library ---
+def load_exercise_library_for_user(user_id):
+    """Persistence boundary: read one user's exercise library from the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        return load_exercise_library_sqlite(user_id)
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def load_exercise_library():
-    """Read the current user's exercise library from SQLite."""
+    """Read the current user's exercise library."""
     return load_exercise_library_for_user(get_current_user_id())
 
 
@@ -1142,7 +1253,7 @@ def get_exercise_library_table_count(user_id):
         return cursor.fetchone()[0]
 
 
-def save_exercise_library_for_user(exercise_library, user_id):
+def save_exercise_library_sqlite(exercise_library, user_id):
     """
     Save one user's exercise library to SQLite.
 
@@ -1188,8 +1299,17 @@ def save_exercise_library_for_user(exercise_library, user_id):
             )
 
 
+def save_exercise_library_for_user(exercise_library, user_id):
+    """Persistence boundary: save one user's exercise library to the active backend."""
+    backend = get_database_backend()
+    if backend == "sqlite":
+        save_exercise_library_sqlite(exercise_library, user_id)
+        return
+    raise ValueError(f"Unsupported DATABASE_BACKEND: {backend}")
+
+
 def save_exercise_library(exercise_library):
-    """Save the current user's exercise library to SQLite."""
+    """Save the current user's exercise library."""
     save_exercise_library_for_user(exercise_library, get_current_user_id())
 
 
@@ -1203,6 +1323,9 @@ def migrate_exercise_library_json_to_sqlite_if_needed():
     initialize_database()
 
     user_id = get_current_user_id()
+    if user_id != DEFAULT_USER_ID:
+        return
+
     if get_exercise_library_table_count(user_id) > 0:
         return
 
@@ -1236,6 +1359,259 @@ def migrate_exercise_library_json_to_sqlite_if_needed():
 
     save_exercise_library_for_user(valid_entries, user_id)
     st.success(f"Migrated {len(valid_entries)} exercises to SQLite for {user_id}.")
+
+
+STARTER_EXERCISES = [
+    {
+        "name": "Bench Press",
+        "category": "Push",
+        "primary_muscle": "Chest",
+        "default_sets": 3,
+        "rep_min": 6,
+        "rep_max": 10,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Incline Dumbbell Press",
+        "category": "Push",
+        "primary_muscle": "Chest",
+        "default_sets": 3,
+        "rep_min": 8,
+        "rep_max": 12,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Pull Up",
+        "category": "Pull",
+        "primary_muscle": "Back",
+        "default_sets": 3,
+        "rep_min": 6,
+        "rep_max": 10,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Barbell Row",
+        "category": "Pull",
+        "primary_muscle": "Back",
+        "default_sets": 3,
+        "rep_min": 6,
+        "rep_max": 10,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Squat",
+        "category": "Legs",
+        "primary_muscle": "Quads",
+        "default_sets": 3,
+        "rep_min": 6,
+        "rep_max": 10,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Romanian Deadlift",
+        "category": "Legs",
+        "primary_muscle": "Hamstrings",
+        "default_sets": 3,
+        "rep_min": 6,
+        "rep_max": 10,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Leg Press",
+        "category": "Legs",
+        "primary_muscle": "Quads",
+        "default_sets": 3,
+        "rep_min": 8,
+        "rep_max": 12,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Lateral Raise",
+        "category": "Push",
+        "primary_muscle": "Shoulders",
+        "default_sets": 3,
+        "rep_min": 8,
+        "rep_max": 12,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Triceps Pushdown",
+        "category": "Push",
+        "primary_muscle": "Triceps",
+        "default_sets": 3,
+        "rep_min": 8,
+        "rep_max": 12,
+        "weight_increment": 5,
+    },
+    {
+        "name": "Dumbbell Curl",
+        "category": "Pull",
+        "primary_muscle": "Biceps",
+        "default_sets": 3,
+        "rep_min": 8,
+        "rep_max": 12,
+        "weight_increment": 5,
+    },
+]
+
+STARTER_TEMPLATES = [
+    {
+        "template_name": "Push Day",
+        "exercises": [
+            "Bench Press",
+            "Incline Dumbbell Press",
+            "Lateral Raise",
+            "Triceps Pushdown",
+        ],
+    },
+    {
+        "template_name": "Pull Day",
+        "exercises": [
+            "Pull Up",
+            "Barbell Row",
+            "Dumbbell Curl",
+        ],
+    },
+    {
+        "template_name": "Leg Day",
+        "exercises": [
+            "Squat",
+            "Romanian Deadlift",
+            "Leg Press",
+        ],
+    },
+]
+
+
+def user_has_any_setup_data(user_id):
+    """
+    Return True when the user already has exercises, templates, or workout history.
+
+    An empty weekly plan alone does not count as setup data.
+    """
+    if get_exercise_library_table_count(user_id) > 0:
+        return True
+    if get_workout_templates_table_count(user_id) > 0:
+        return True
+    if get_workout_table_count(user_id) > 0:
+        return True
+    return False
+
+
+def user_skipped_onboarding(user_id):
+    """Return True when this user chose to start blank instead of using the starter setup."""
+    initialize_database()
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        cursor = connection.execute(
+            "SELECT skipped_onboarding FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return False
+    return bool(row[0])
+
+
+def set_user_skipped_onboarding(user_id):
+    """Remember that this user dismissed the new-user onboarding card."""
+    initialize_database()
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            INSERT INTO user_settings (user_id, skipped_onboarding, updated_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                skipped_onboarding = 1,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, timestamp),
+        )
+
+
+def create_starter_exercise_library_for_user(user_id):
+    """
+    Create a small starter exercise library for a brand-new user.
+
+    Existing exercises are never overwritten.
+    """
+    if get_exercise_library_table_count(user_id) > 0:
+        return False
+
+    save_exercise_library_for_user(STARTER_EXERCISES, user_id)
+    return True
+
+
+def create_starter_templates_for_user(user_id):
+    """
+    Create Push Day, Pull Day, and Leg Day templates for a brand-new user.
+
+    Existing templates are never overwritten.
+    """
+    if get_workout_templates_table_count(user_id) > 0:
+        return False
+
+    save_templates_for_user(STARTER_TEMPLATES, user_id)
+    return True
+
+
+def create_starter_workout_plan_for_user(user_id):
+    """
+    Assign starter templates to the weekly plan when no days are scheduled yet.
+
+    Existing scheduled days are never overwritten.
+    """
+    workout_plan = load_workout_plan_for_user(user_id)
+    weekly_schedule = workout_plan.get("weekly_schedule", {})
+
+    for day_name in WEEKDAY_NAMES:
+        if str(weekly_schedule.get(day_name, "")).strip():
+            return False
+
+    weekly_schedule["Monday"] = "Push Day"
+    weekly_schedule["Wednesday"] = "Pull Day"
+    weekly_schedule["Friday"] = "Leg Day"
+    workout_plan["weekly_schedule"] = weekly_schedule
+    save_workout_plan_for_user(workout_plan, user_id)
+    return True
+
+
+def should_show_onboarding_card(user_id):
+    """Return True when a new user still needs a gentle getting-started prompt."""
+    if user_has_any_setup_data(user_id):
+        return False
+    if user_skipped_onboarding(user_id):
+        return False
+    return True
+
+
+def render_onboarding_card(user_id):
+    """Show a simple first-time setup card near the top of the app."""
+    if not should_show_onboarding_card(user_id):
+        return
+
+    st.info("Welcome. Want to create starter exercises and templates?")
+    onboarding_col1, onboarding_col2 = st.columns(2)
+
+    with onboarding_col1:
+        if st.button("Create starter setup", key="onboarding_create_starter_button"):
+            created_exercises = create_starter_exercise_library_for_user(user_id)
+            created_templates = create_starter_templates_for_user(user_id)
+            created_plan = create_starter_workout_plan_for_user(user_id)
+
+            if created_exercises or created_templates or created_plan:
+                st.success(
+                    "Starter setup created. Check Exercise Library, "
+                    "Workout Templates / Plans, and Today's Workout."
+                )
+            else:
+                st.info("Starter setup was already present for this user.")
+            st.rerun()
+
+    with onboarding_col2:
+        if st.button("Start blank", key="onboarding_start_blank_button"):
+            set_user_skipped_onboarding(user_id)
+            st.rerun()
 
 
 def get_exercise_by_name(exercise_library, exercise_name):
@@ -2434,6 +2810,8 @@ migrate_workout_plan_json_to_sqlite_if_needed()
 
 st.title("Workout Programming App")
 st.caption(f"Current user: **{get_logged_in_display_name()}**")
+
+render_onboarding_card(current_user_id)
 
 if ENABLE_LOCAL_USER_SWITCHER:
     with st.expander("Developer user switcher", expanded=False):
