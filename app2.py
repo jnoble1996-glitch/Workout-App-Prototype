@@ -2541,6 +2541,13 @@ def stop_rest_timer():
     st.session_state.rest_timer_end_time = None
 
 
+def reset_rest_timer():
+    """Return the rest timer to a ready state while keeping the bottom bar visible."""
+    st.session_state.rest_timer_is_running = False
+    st.session_state.rest_timer_end_time = None
+    st.session_state.rest_timer_status_message = None
+
+
 def get_rest_timer_remaining_seconds():
     """Return how many seconds are left on the active rest timer."""
     if not st.session_state.rest_timer_is_running:
@@ -2566,7 +2573,9 @@ def try_auto_start_rest_timer():
 
 def render_rest_timer_section():
     """Show rest timer controls (caller may wrap in an expander on Today's Workout)."""
-    st.caption("Rest between sets. The bar at the bottom stays visible while you scroll.")
+    st.caption(
+        "Rest between sets. Use the sticky panel at the bottom for quick Stop / Reset."
+    )
 
     duration_choice = st.radio(
         "Rest duration",
@@ -2634,58 +2643,95 @@ def render_rest_timer_section():
         st.caption("Rest timer: ready")
 
 
-def render_sticky_rest_timer():
-    """
-    Show a fixed bottom bar with the current rest timer status.
-
-    Display-only — controls stay in render_rest_timer_section() above.
-    CSS position: fixed keeps the bar visible while scrolling exercise cards.
-    """
-    status_text = None
+def get_rest_timer_bar_status():
+    """Return the bottom-bar label and background color for the sticky rest timer."""
     bar_background = "#1e3a5f"
-    bar_color = "#ffffff"
 
     if st.session_state.rest_timer_is_running:
         remaining_seconds = get_rest_timer_remaining_seconds()
         if remaining_seconds > 0:
-            status_text = f"Rest: {format_seconds(remaining_seconds)} remaining"
-        else:
-            status_text = "Rest complete"
-            bar_background = "#0d7377"
-    elif (
+            return f"Rest: {format_seconds(remaining_seconds)} remaining", bar_background
+        return "Rest complete", "#0d7377"
+
+    if (
         st.session_state.rest_timer_end_time is not None
         and time.time() >= st.session_state.rest_timer_end_time
     ):
-        status_text = "Rest complete"
-        bar_background = "#0d7377"
-    elif st.session_state.get("rest_timer_status_message"):
-        status_text = st.session_state.rest_timer_status_message
-        bar_background = "#4a4a4a"
+        return "Rest complete", "#0d7377"
 
-    if status_text is None:
+    status_message = st.session_state.get("rest_timer_status_message")
+    if status_message:
+        return status_message, "#4a4a4a"
+
+    return "Rest timer ready", bar_background
+
+
+def render_sticky_rest_timer():
+    """
+    Show a fixed bottom panel with timer status and quick Stop / Reset controls.
+
+    We use real Streamlit buttons here (not HTML <button> tags) because only
+    Streamlit widgets can call Python functions like stop_rest_timer() on click.
+    A small CSS rule pins the button container to the bottom of the screen.
+    """
+    if not st.session_state.get("show_rest_timer_bar", False):
         return
+
+    status_text, bar_background = get_rest_timer_bar_status()
 
     st.markdown(
         f"""
-        <div style="
+        <style>
+        div[data-testid="stElementContainer"]:has(#sticky-rest-controls-marker)
+            + div[data-testid="stElementContainer"] {{
             position: fixed;
             bottom: 0;
             left: 0;
             right: 0;
             z-index: 9999;
-            padding: 14px 16px;
-            text-align: center;
-            font-size: 20px;
-            font-weight: 700;
             background-color: {bar_background};
-            color: {bar_color};
+            padding: 10px 12px 14px;
             box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.25);
-        ">
-            {status_text}
-        </div>
+            max-width: 42rem;
+            margin-left: auto;
+            margin-right: auto;
+        }}
+        div[data-testid="stElementContainer"]:has(#sticky-rest-controls-marker)
+            + div[data-testid="stElementContainer"] [data-testid="stMarkdownContainer"] p {{
+            color: #ffffff !important;
+            font-weight: 700;
+            font-size: 1.1rem;
+            text-align: center;
+            margin: 0 0 8px 0;
+        }}
+        </style>
+        <div id="sticky-rest-controls-marker"></div>
         """,
         unsafe_allow_html=True,
     )
+
+    with st.container():
+        st.markdown(f"**{status_text}**")
+        stop_col, reset_col = st.columns(2)
+        if stop_col.button(
+            "Stop",
+            key="sticky_rest_timer_stop_button",
+            use_container_width=True,
+        ):
+            stop_rest_timer()
+            st.rerun()
+
+        if reset_col.button(
+            "Reset",
+            key="sticky_rest_timer_reset_button",
+            use_container_width=True,
+        ):
+            reset_rest_timer()
+            st.rerun()
+
+    if st.session_state.rest_timer_is_running and get_rest_timer_remaining_seconds() > 0:
+        # Rerun about once per second while counting down. No sleep loop needed.
+        st_autorefresh(interval=1000, key="sticky_rest_timer_autorefresh")
 
 
 def get_finished_workout_summary(selected_todays_template, active_plan):
@@ -2773,7 +2819,7 @@ def inject_mobile_css():
         <style>
         .block-container {
             padding-top: 0.75rem;
-            padding-bottom: 5rem;
+            padding-bottom: 7rem;
             max-width: 42rem;
         }
         div[data-testid="stButton"] > button {
@@ -3239,6 +3285,9 @@ if "auto_start_rest_timer" not in st.session_state:
 if "rest_timer_status_message" not in st.session_state:
     st.session_state.rest_timer_status_message = None
 
+if "show_rest_timer_bar" not in st.session_state:
+    st.session_state.show_rest_timer_bar = False
+
 require_login()
 
 current_user_id = get_current_user_id()
@@ -3447,6 +3496,7 @@ with tab_workout:
                 st.session_state.active_workout_plan = None
                 st.session_state.completed_recommended_sets = []
                 st.session_state.todays_session_added_exercises = []
+                st.session_state.show_rest_timer_bar = True
 
             if st.button(
                 "Refresh recommendations",
@@ -3470,6 +3520,7 @@ with tab_workout:
                 st.session_state.active_workout_plan = None
                 st.session_state.completed_recommended_sets = []
                 st.session_state.todays_session_added_exercises = []
+                st.session_state.show_rest_timer_bar = False
                 st.success("Workout finished.")
 
         # Clear stale session data from a previous day or template.
@@ -3812,8 +3863,8 @@ with tab_workout:
             else:
                 st.caption("Save a workout template first to see target options.")
 
-        # Bottom spacer so the fixed rest timer bar does not cover content.
-        st.markdown("<div style='height: 70px;'></div>", unsafe_allow_html=True)
+        # Extra space so the sticky rest timer panel does not cover content.
+        st.markdown("<div style='height: 120px;'></div>", unsafe_allow_html=True)
         render_sticky_rest_timer()
 
 
