@@ -2147,7 +2147,8 @@ def build_single_exercise_plan(
         return exercise_plan
 
     best_1rm = get_best_estimated_1rm(exercise_entries)
-    targets = get_workout_targets(best_1rm, exercise_entries, count=2)
+    # Five options, smallest 1RM jump first — same math as get_workout_targets().
+    targets = get_workout_targets(best_1rm, exercise_entries, count=5)
 
     recommendations = []
     for rank, target in enumerate(targets, start=1):
@@ -2797,7 +2798,7 @@ def inject_mobile_css():
     )
 
 
-def count_completed_sets_in_plan(active_plan):
+def count_completed_sets_in_plan(active_plan, template_name=None):
     """Return how many recommended sets are logged in the current workout session."""
     if not active_plan:
         return 0, 0
@@ -2806,9 +2807,23 @@ def count_completed_sets_in_plan(active_plan):
     for exercise_plan in active_plan.get("exercises", []):
         if not exercise_plan.get("has_history") or not exercise_plan.get("recommendations"):
             continue
-        for recommendation in exercise_plan["recommendations"]:
-            for planned_set in recommendation.get("sets", []):
-                total_sets += 1
+
+        recommendations = exercise_plan["recommendations"]
+        selected_index = 0
+        if template_name is not None:
+            exercise_index = exercise_plan.get("exercise_index", 0)
+            planned_exercise = exercise_plan.get(
+                "planned_exercise", exercise_plan.get("exercise", "")
+            )
+            widget_key = (
+                f"top_set_target_widget_{template_name}_"
+                f"{exercise_index}_{planned_exercise}"
+            )
+            if widget_key in st.session_state:
+                selected_index = st.session_state[widget_key]
+
+        if 0 <= selected_index < len(recommendations):
+            total_sets += len(recommendations[selected_index].get("sets", []))
 
     completed_sets = len(st.session_state.get("completed_recommended_sets", []))
     return completed_sets, total_sets
@@ -3411,7 +3426,8 @@ with tab_workout:
         with st.container(border=True):
             st.markdown(f'<p class="gym-hero">{selected_todays_template}</p>', unsafe_allow_html=True)
             completed_sets, total_sets = count_completed_sets_in_plan(
-                st.session_state.active_workout_plan
+                st.session_state.active_workout_plan,
+                selected_todays_template,
             )
             if total_sets > 0:
                 st.caption(
@@ -3499,41 +3515,6 @@ with tab_workout:
             for library_exercise in swap_exercise_library:
                 swap_exercise_names.append(library_exercise["name"])
 
-            with st.expander("Add exercise today", expanded=False):
-                st.caption(
-                    "Add an extra exercise for this session only. "
-                    "This does not change your saved template."
-                )
-
-                add_exercise_library_names = []
-                for library_exercise in swap_exercise_library:
-                    add_exercise_library_names.append(library_exercise["name"])
-
-                if not add_exercise_library_names:
-                    st.info("Add exercises in **Library** before adding one here.")
-                else:
-                    exercise_to_add_today = st.selectbox(
-                        "Exercise to add",
-                        add_exercise_library_names,
-                        key=f"add_exercise_today_select_{selected_todays_template}",
-                    )
-
-                    if st.button(
-                        "Add to today's workout",
-                        key=f"add_exercise_today_button_{selected_todays_template}",
-                        use_container_width=True,
-                    ):
-                        added_ok, add_message = add_exercise_to_active_plan(
-                            exercise_to_add_today,
-                            selected_todays_template,
-                            todays_workouts,
-                        )
-                        if added_ok:
-                            st.success(add_message)
-                        else:
-                            st.warning(add_message)
-                        st.rerun()
-
             for exercise_plan in active_plan["exercises"]:
                 # planned_exercise = template slot; swapped_to = today's temporary replacement.
                 exercise_index = exercise_plan.get("exercise_index", 0)
@@ -3619,121 +3600,171 @@ with tab_workout:
                         )
                         continue
 
-                    for recommendation in exercise_plan["recommendations"]:
-                        rank = recommendation["rank"]
-                        st.caption(
-                            f"Option #{rank} · projected 1RM {recommendation['projected_1rm']} lbs "
+                    recommendations = exercise_plan["recommendations"]
+                    option_labels = []
+                    for recommendation in recommendations:
+                        top_set = recommendation["sets"][0]
+                        option_labels.append(
+                            f"{int(top_set['target_weight'])} lbs × {top_set['target_reps']} → "
+                            f"{recommendation['projected_1rm']} lb e1RM "
                             f"(+{recommendation['improvement']})"
                         )
 
-                        for planned_set in recommendation["sets"]:
-                            set_id = planned_set["set_id"]
-                            is_completed = set_id in st.session_state.completed_recommended_sets
-                            set_number = planned_set["set_number"]
-                            target_weight = planned_set["target_weight"]
-                            target_reps = planned_set["target_reps"]
+                    # Widget key is separate from app state — never assign to it after creation.
+                    selected_option_index = st.selectbox(
+                        "Choose top set target",
+                        range(len(option_labels)),
+                        format_func=lambda i: option_labels[i],
+                        key=(
+                            f"top_set_target_widget_{selected_todays_template}_"
+                            f"{exercise_index}_{planned_exercise}"
+                        ),
+                    )
 
-                            # Target values come from the frozen plan.
-                            # Actual inputs let the user log what they really performed.
-                            input_key_base = (
-                                f"{selected_todays_template}_{exercise_index}_"
-                                f"{planned_exercise}_{rank}_{set_number}"
+                    selected_recommendation = recommendations[selected_option_index]
+                    rank = selected_recommendation["rank"]
+
+                    for planned_set in selected_recommendation["sets"]:
+                        set_id = planned_set["set_id"]
+                        is_completed = set_id in st.session_state.completed_recommended_sets
+                        set_number = planned_set["set_number"]
+                        target_weight = planned_set["target_weight"]
+                        target_reps = planned_set["target_reps"]
+
+                        input_key_base = (
+                            f"{selected_todays_template}_{exercise_index}_"
+                            f"{planned_exercise}_{rank}_{set_number}"
+                        )
+
+                        set_label = "Top set" if set_number == 1 else f"Set {set_number}"
+
+                        with st.container(border=True):
+                            st.markdown(f"**{set_label}**")
+                            st.caption(
+                                f"Target: {int(target_weight)} lbs × {target_reps} reps · "
+                                f"e1RM {planned_set['estimated_1rm']} lbs"
                             )
 
-                            with st.container(border=True):
-                                st.markdown(f"**Set {set_number}**")
-                                st.caption(
-                                    f"Target: {int(target_weight)} lbs × {target_reps} reps"
+                            if is_completed:
+                                st.success("✓ Logged")
+                            else:
+                                weight_col, reps_col = st.columns(2)
+                                actual_weight = weight_col.number_input(
+                                    "Weight (lbs)",
+                                    min_value=0,
+                                    value=int(target_weight),
+                                    step=5,
+                                    format="%d",
+                                    key=f"actual_weight_{input_key_base}",
+                                )
+                                actual_reps = reps_col.number_input(
+                                    "Reps",
+                                    min_value=1,
+                                    value=int(target_reps),
+                                    step=1,
+                                    key=f"actual_reps_{input_key_base}",
                                 )
 
-                                if is_completed:
-                                    st.success("✓ Logged")
-                                else:
-                                    weight_col, reps_col = st.columns(2)
-                                    actual_weight = weight_col.number_input(
-                                        "Weight (lbs)",
-                                        min_value=0,
-                                        value=int(target_weight),
-                                        step=5,
-                                        format="%d",
-                                        key=f"actual_weight_{input_key_base}",
-                                    )
-                                    actual_reps = reps_col.number_input(
-                                        "Reps",
-                                        min_value=1,
-                                        value=int(target_reps),
-                                        step=1,
-                                        key=f"actual_reps_{input_key_base}",
+                                suspicious_warnings, needs_confirmation = get_suspicious_entry_warnings(
+                                    actual_weight,
+                                    actual_reps,
+                                    todays_exercise,
+                                    todays_workouts,
+                                )
+                                for warning_message in suspicious_warnings:
+                                    st.warning(warning_message)
+
+                                confirm_suspicious_set = True
+                                if needs_confirmation:
+                                    confirm_suspicious_set = st.checkbox(
+                                        "I confirm this set looks correct",
+                                        key=f"confirm_suspicious_{input_key_base}",
                                     )
 
-                                    suspicious_warnings, needs_confirmation = get_suspicious_entry_warnings(
-                                        actual_weight,
-                                        actual_reps,
-                                        todays_exercise,
-                                        todays_workouts,
+                                if st.button(
+                                    f"Log Set {set_number}",
+                                    key=f"log_recommended_set_{set_id}",
+                                    type="primary",
+                                    use_container_width=True,
+                                    disabled=needs_confirmation and not confirm_suspicious_set,
+                                ):
+                                    actual_estimated_1rm = round(
+                                        estimate_1rm(actual_weight, actual_reps)
                                     )
-                                    for warning_message in suspicious_warnings:
-                                        st.warning(warning_message)
+                                    logged_weight = int(actual_weight)
+                                    logged_reps = int(actual_reps)
+                                    workouts = load_workouts()
+                                    session_id = active_plan.get("session_id")
+                                    if not session_id:
+                                        session_id = create_session_id(selected_todays_template)
+                                    new_entry = {
+                                        "date": str(date.today()),
+                                        "workout_name": selected_todays_template,
+                                        "exercise": todays_exercise,
+                                        "set_number": set_number,
+                                        "weight": logged_weight,
+                                        "reps": logged_reps,
+                                        "estimated_1rm": actual_estimated_1rm,
+                                        "volume": logged_weight * logged_reps,
+                                        "notes": "",
+                                        "target_weight": int(target_weight),
+                                        "target_reps": int(target_reps),
+                                        "target_estimated_1rm": planned_set["estimated_1rm"],
+                                        "session_id": session_id,
+                                        "logged_from": "Today's Workout",
+                                    }
 
-                                    confirm_suspicious_set = True
-                                    if needs_confirmation:
-                                        confirm_suspicious_set = st.checkbox(
-                                            "I confirm this set looks correct",
-                                            key=f"confirm_suspicious_{input_key_base}",
-                                        )
+                                    if swapped_to:
+                                        new_entry["planned_exercise"] = planned_exercise
+                                        new_entry["swapped_from"] = planned_exercise
+                                        new_entry["swapped_to"] = swapped_to
 
-                                    if st.button(
-                                        f"Log Set {set_number}",
-                                        key=f"log_recommended_set_{set_id}",
-                                        type="primary",
-                                        use_container_width=True,
-                                        disabled=needs_confirmation and not confirm_suspicious_set,
-                                    ):
-                                        actual_estimated_1rm = round(
-                                            estimate_1rm(actual_weight, actual_reps)
-                                        )
-                                        logged_weight = int(actual_weight)
-                                        logged_reps = int(actual_reps)
-                                        workouts = load_workouts()
-                                        # All sets in this Today's Workout session share one session_id.
-                                        session_id = active_plan.get("session_id")
-                                        if not session_id:
-                                            session_id = create_session_id(selected_todays_template)
-                                        # exercise = what was actually performed.
-                                        # planned_exercise = what the template scheduled.
-                                        new_entry = {
-                                            "date": str(date.today()),
-                                            "workout_name": selected_todays_template,
-                                            "exercise": todays_exercise,
-                                            "set_number": set_number,
-                                            "weight": logged_weight,
-                                            "reps": logged_reps,
-                                            "estimated_1rm": actual_estimated_1rm,
-                                            "volume": logged_weight * logged_reps,
-                                            "notes": "",
-                                            "target_weight": int(target_weight),
-                                            "target_reps": int(target_reps),
-                                            "target_estimated_1rm": planned_set["estimated_1rm"],
-                                            "session_id": session_id,
-                                            "logged_from": "Today's Workout",
-                                        }
+                                    if added_during_workout:
+                                        new_entry["added_during_workout"] = True
 
-                                        if swapped_to:
-                                            new_entry["planned_exercise"] = planned_exercise
-                                            new_entry["swapped_from"] = planned_exercise
-                                            new_entry["swapped_to"] = swapped_to
+                                    workouts.append(new_entry)
+                                    save_workouts(workouts)
+                                    st.session_state.completed_recommended_sets.append(set_id)
+                                    st.success(
+                                        f"Logged Set {set_number}: "
+                                        f"{logged_weight} lbs × {logged_reps} reps"
+                                    )
+                                    try_auto_start_rest_timer()
 
-                                        if added_during_workout:
-                                            new_entry["added_during_workout"] = True
+            with st.expander("Add exercise today", expanded=False):
+                st.caption(
+                    "Add an extra exercise for this session only. "
+                    "This does not change your saved template."
+                )
 
-                                        workouts.append(new_entry)
-                                        save_workouts(workouts)
-                                        st.session_state.completed_recommended_sets.append(set_id)
-                                        st.success(
-                                            f"Logged Set {set_number}: "
-                                            f"{logged_weight} lbs × {logged_reps} reps"
-                                        )
-                                        try_auto_start_rest_timer()
+                add_exercise_library_names = []
+                for library_exercise in swap_exercise_library:
+                    add_exercise_library_names.append(library_exercise["name"])
+
+                if not add_exercise_library_names:
+                    st.info("Add exercises in **Library** before adding one here.")
+                else:
+                    exercise_to_add_today = st.selectbox(
+                        "Exercise to add",
+                        add_exercise_library_names,
+                        key=f"add_exercise_today_select_{selected_todays_template}",
+                    )
+
+                    if st.button(
+                        "Add to today's workout",
+                        key=f"add_exercise_today_button_{selected_todays_template}",
+                        use_container_width=True,
+                    ):
+                        added_ok, add_message = add_exercise_to_active_plan(
+                            exercise_to_add_today,
+                            selected_todays_template,
+                            todays_workouts,
+                        )
+                        if added_ok:
+                            st.success(add_message)
+                        else:
+                            st.warning(add_message)
+                        st.rerun()
 
         st.divider()
 
